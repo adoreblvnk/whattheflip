@@ -68,13 +68,11 @@ The diagnostic tool (Node 1) consists of the **Waveshare ESP32-C6-Pico-M** mount
 ![Figure 1: Hardware Interconnect & Maker Pi Base Pinout](diagrams/hardware_interconnect.png)
 
 **Figure 1b: Node 1 ESP32-C6 Pin Allocation (annotated)**
-![Figure 1b: Node 1 ESP32-C6 Pin Allocation](diagrams/hardware_pinout_annotated.png)
-
-*Pin names follow the ESP32-C6 GPIO numbering (the firmware's source of truth); the Maker Pi base silkscreen label (e.g. "GP0") is noted in parentheses as a wiring reference.*
+![Figure 1b: Node 1 ESP32-C6 Pin Allocation](diagrams/ESP32_pinout.png)
 
 ### 2.2 Pin Allocation Table (Maker Pi Base Carrier Integration)
 
-*Note: All 4 probe pins are dynamically shared between `AutoDiscovery_Task` (listening mode) and `Chaos_Fuzzer_Task` (injection mode), arbitrated via a mutex (`MTX_PROBE_ACCESS`). Mounting the ESP32-C6 on the Maker Pi Base maps physical header pins to native high-speed GPIOs for sniffing, while utilizing the onboard SD card socket and WS2812 LED.*
+*Note: All 4 probe pins are dynamically shared between `AutoDiscovery_Task` (listening mode) and `Chaos_Fuzzer_Task` (injection mode), arbitrated via a mutex (`MTX_PROBE_ACCESS`). Mounting the ESP32-C6 on the Maker Pi Base maps physical header pins to native high-speed GPIOs for sniffing, while utilizing the onboard SD card socket and the ESP32-C6's onboard WS2812 LED.*
 
 | Maker Pi Pin | Signal Name | ESP32-C6 Pin | Interface Type | Owning Task / Arbitration | Electrical & Hardware Notes |
 |:---:|---|:---:|---|---|---|
@@ -87,15 +85,12 @@ The diagnostic tool (Node 1) consists of the **Waveshare ESP32-C6-Pico-M** mount
 | **Pin 16 (GP12)** | `SD_MISO` | **GPIO20** | Hardware SPI | `Storage_Task` | **Hardwired to Maker Pi onboard MicroSD slot**. SPI Master In Slave Out. |
 | **Pin 20 (GP15)** | `SD_CS` | **EXIO7** | IO Expander / CS | `Storage_Task` | **Hardwired to Maker Pi onboard MicroSD slot**. Active-Low Chip Select via TCA9554. |
 | **Pin 12 (GP9)** | `E_STOP_BTN` | **GPIO9** | GPIO Input (Pull-Up)| `Safety_Supervisor_Task` | **Onboard BOOT pushbutton**. Active-Low, $\le 5\text{ ms}$ High-Z interrupt (avoids I2C short). |
-| **Pin 11 (GP8)** | `STATUS_LED` | **GPIO8** | WS2812 / DIN | `Safety_Supervisor_Task` | **Onboard WS2812 Addressable RGB LED** (Green: Ready, Blue: Sniff, Red: Fault). |
+| **(C6 onboard)** | `STATUS_LED` | **GPIO8** | WS2812 / DIN | `Safety_Supervisor_Task` | **ESP32-C6-Pico onboard WS2812 Addressable RGB LED** (Green: Ready, Blue: Sniff, Red: Fault). GPIO8 is a strapping pin; driven only after boot. |
 | **Pin 24** | `BUZZER_OUT` | **EXIO3** | PWM / Audio | `Safety_Supervisor_Task` | Maker Pi Base onboard piezo buzzer, driven via the TCA9554 expander (EXIO3). |
 | **Pins 26 / 27** | `EXP_I2C` | **GPIO22 / 23** | I2C Master Bus | System Init | Dedicated to onboard TCA9554PWR expander. **Baseboard Buttons 1 & 2 must NOT be pressed**. |
 | **Pin 36 (3V3)** | `VCC_LV` | **3V3 OUT** | Power Output | Hardware Interconnect | 3.3V reference power to low-voltage side of TXS0104E level shifter. |
 | **Pin 38 (GND)** | `GND` | **GND** | Ground Plane | Hardware Interconnect | Common reference ground unified across Maker Pi Base, Level Shifter, and Pico Victim. |
 
-> **Note 1 — Strapping pins.** `GPIO8` (status LED) and `GPIO9` (E-stop / BOOT) are ESP32-C6 strapping pins whose levels are sampled by the ROM bootloader at reset. The E-stop is only armed by `Safety_Supervisor_Task` *after* boot completes, so an E-stop press cannot force the chip into download mode or otherwise disturb startup.
->
-> **Note 2 — Protocol decode routing.** The 4 probe pins (`GPIO0`–`GPIO3`) are general-purpose inputs, not the C6's dedicated I2C pads. I2C/UART/SPI decode is performed by routing these pins to the internal protocol channels through the GPIO matrix (software-timed capture), not by a fixed hardware I2C peripheral. This is what satisfies R-1.3 (dynamic pin remap without rewiring).
 
 ---
 
@@ -273,7 +268,7 @@ Every interface arrow in Figure 2 carries a unique ID and a specific payload. IS
   * `AutoDiscovery_Task` and `Chaos_Fuzzer_Task` dynamically share the 4 target probe lines on Maker Pi Pins 1, 2, 4, 5 (ESP32-C6 `GPIO0`, `GPIO1`, `GPIO2`, `GPIO3`), arbitrated via Mutex `MTX_PROBE_ACCESS`.
   * `Wireless_Engine_Task` owns the 2.4 GHz radio transceiver baseband.
   * `Storage_Task` owns the Maker Pi onboard MicroSD card slot hardwired to physical pins 14–16 and 20 (ESP32-C6 `GPIO18`, `GPIO19`, `GPIO20`, and `EXIO7`).
-  * `Safety_Supervisor_Task` owns the emergency stop button on Maker Pi Pin 12 (`GPIO9` BOOT switch), status NeoPixel (`GPIO8`), and alert buzzer (`EXIO3`).
+  * `Safety_Supervisor_Task` owns the emergency stop button on Maker Pi Pin 12 (`GPIO9` BOOT switch), status NeoPixel (ESP32-C6 onboard `GPIO8`), and alert buzzer (`EXIO3`).
   * `Web_Dashboard_Task` owns the Wi-Fi AP network socket interface.
 * **Which task has the highest priority, and why?**
   * `Safety_Supervisor_Task` has the highest priority (Priority 1) because target hardware safety is the primary system invariant. If an electrical short occurs or the user presses the emergency stop, the system must immediately preempt all other tasks and drop probe pins to High-Z in $\le 5\text{ ms}$.
