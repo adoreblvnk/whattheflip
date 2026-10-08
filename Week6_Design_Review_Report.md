@@ -86,8 +86,6 @@ The diagnostic tool (Node 1) consists of the **Waveshare ESP32-C6-Pico-M** mount
 | ESP32-C6-Pico onboard WS2812     | `STATUS_LED` | `RGB_LED` (GPIO8)   |     **GPIO8**     | WS2812 / DIN         | `Safety_Supervisor_Task`. **ESP32-C6-Pico onboard WS2812 Addressable RGB LED** (Green: Ready, Blue: Sniff, Red: Fault). GPIO8 is a strapping pin; driven only after boot. |
 | Maker Pi onboard piezo buzzer    | `BUZZER_OUT` | `Buzzer` (Pin 24)   |     **EXIO3**     | PWM / Audio          | `Safety_Supervisor_Task`. Maker Pi Base onboard piezo buzzer, driven via the TCA9554 expander (EXIO3).                                                                    |
 | TCA9554PWR IO expander           | `EXP_I2C`    | `GP22/GP23` (26/27) |  **GPIO22 / 23**  | I2C Master Bus       | System Init. Dedicated to onboard TCA9554PWR expander. **Baseboard Buttons 1 & 2 must NOT be pressed**.                                                                   |
-| TXS0104E level shifter (LV rail) | `VCC_LV`     | `3V3` (Pin 36)      |    **3V3 OUT**    | Power Output         | Hardware Interconnect. 3.3V reference power to low-voltage side of TXS0104E level shifter.                                                                                |
-| Common ground plane              | `GND`        | `GND` (Pin 38)      |      **GND**      | Ground Plane         | Hardware Interconnect. Common reference ground unified across Maker Pi Base, Level Shifter, and Pico Victim.                                                              |
 
 
 ---
