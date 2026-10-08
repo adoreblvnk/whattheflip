@@ -55,7 +55,7 @@ skinparam control {
 ' ==================== 1. HARDWARE & ISRS ====================
 package "1. Hardware Interrupts" as PKG_HW #F8FAFC {
     control "E-Stop ISR\n(GPIO9)" as ISR_EStop #FCA5A5
-    control "Probe Edge ISR\n(GPIO16/17/4/5)" as ISR_Probe #FDBA74
+    control "Probe Edge ISR\n(GPIO0/1/2/3)" as ISR_Probe #FDBA74
     control "Radio Baseband ISR\n(2.4 GHz RF)" as ISR_Radio #93C5FD
 }
 
