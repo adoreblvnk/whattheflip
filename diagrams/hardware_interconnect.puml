@@ -1,0 +1,79 @@
+@startuml hardware_interconnect
+!theme plain
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam linetype ortho
+
+skinparam component {
+    BorderColor #1E293B
+    BackgroundColor #F8FAFC
+    FontColor #0F172A
+    FontSize 12
+}
+
+' ==================== NODE 2: WIRED VICTIM ====================
+package "Node 2: Wired Victim (Raspberry Pi Pico)" as PKG_PICO #ECFDF5 {
+    component "GP0 (UART TX)" as P_GP0 #A7F3D0
+    component "GP1 (UART RX)" as P_GP1 #A7F3D0
+    component "GP4 (I2C SDA)" as P_GP4 #A7F3D0
+    component "GP5 (I2C SCL)" as P_GP5 #A7F3D0
+    component "GY-511 Compass\n(LSM303DLHC)" as P_SENSOR #6EE7B7
+    
+    P_SENSOR --> P_GP4 : I2C SDA
+    P_SENSOR --> P_GP5 : I2C SCL
+}
+
+' ==================== LEVEL SHIFTER ====================
+package "Bidirectional Level Shifter (TXS0104E)" as PKG_SHIFTER #FAF5FF {
+    component "Ch 0: HV0 <-> LV0" as LS0 #E9D5FF
+    component "Ch 1: HV1 <-> LV1" as LS1 #E9D5FF
+    component "Ch 2: HV2 <-> LV2" as LS2 #E9D5FF
+    component "Ch 3: HV3 <-> LV3" as LS3 #E9D5FF
+    component "Power Rails\nVCCA: 3.3V | VCCB: 3.3V/5V\nCommon Ground Plane" as LS_PWR #F3E8FF
+}
+
+' ==================== NODE 1: DIAGNOSTIC TOOL ====================
+package "Node 1: Diagnostic Tool (ESP32-C6 on Maker Pi Base)" as PKG_TOOL #F0F9FF {
+    package "Maker Pi Probe Headers" as TOOL_PROBES #E0F2FE {
+        component "Pin 1 (GP0) -> GPIO16" as T_P0 #BAE6FD
+        component "Pin 2 (GP1) -> GPIO17" as T_P1 #BAE6FD
+        component "Pin 4 (GP2) -> GPIO4"  as T_P2 #BAE6FD
+        component "Pin 5 (GP3) -> GPIO5"  as T_P3 #BAE6FD
+    }
+    
+    package "Onboard Baseboard Hardware" as TOOL_BASE #F1F5F9 {
+        database "Onboard MicroSD Slot\n(SPI: GPIO18, 19, 20, EXIO7)" as T_SD #CBD5E1
+        component "E-Stop Button (Pin 12 / GPIO9 BOOT)" as T_ESTOP #FCA5A5
+        component "Status NeoPixel (Pin 11 / GPIO8)" as T_LED #DDD6FE
+        component "Piezo Buzzer (Pin 24 / EXIO3)" as T_BUZZ #FEF08A
+    }
+}
+
+' ==================== NODE 3: WIRELESS VICTIM ====================
+package "Node 3: Wireless Victim (ESP32-C6 Node B)" as PKG_WIRELESS #EFF6FF {
+    component "Wi-Fi 6 SoftAP\n('VICTIM_AP' | Ch 6)" as W_AP #BFDBFE
+    component "802.15.4 Transmitter\n(Raw Data | Ch 15)" as W_ZIGBEE #BFDBFE
+}
+
+' --- Pin-to-Pin Orthogonal Nets ---
+P_GP0 --> LS0 : UART TX
+LS0 --> T_P0   : PROBE_0
+
+P_GP1 <-- LS1 : UART RX
+LS1 <-- T_P1   : PROBE_1
+
+P_GP4 <--> LS2 : I2C SDA
+LS2 <--> T_P2  : PROBE_2
+
+P_GP5 --> LS3 : I2C SCL
+LS3 --> T_P3   : PROBE_3
+
+' --- Wireless Over-the-Air Link (Clean Route) ---
+W_AP -left-> PKG_TOOL : 2.4 GHz RF
+W_ZIGBEE -left-> PKG_TOOL : 2.4 GHz RF
+
+@enduml

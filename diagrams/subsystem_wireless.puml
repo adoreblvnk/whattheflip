@@ -1,0 +1,39 @@
+@startuml subsystem_wireless
+!theme plain
+hide empty description
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam linetype ortho
+
+skinparam state {
+    BorderColor #1E293B
+    BackgroundColor #F8FAFC
+    FontColor #0F172A
+    ArrowColor #2563EB
+    FontSize 13
+}
+
+[*] --> RADIO_IDLE
+
+state RADIO_IDLE #F8FAFC
+state PROMISC_TUNE #F8FAFC
+state CAPTURE_RX #F8FAFC
+state PARSE_METADATA #F8FAFC
+state ENQUEUE_RING #F0FDF4
+state WARN_OVERRUN #FEE2E2
+
+RADIO_IDLE -down-> PROMISC_TUNE : radio_start
+PROMISC_TUNE -down-> CAPTURE_RX : tune_ok
+
+CAPTURE_RX -down-> PARSE_METADATA : frame_rx
+CAPTURE_RX -right-> WARN_OVERRUN : fifo_overflow
+
+PARSE_METADATA -down-> ENQUEUE_RING : enqueue_ok
+ENQUEUE_RING -left-> CAPTURE_RX : next
+
+WARN_OVERRUN -up-> CAPTURE_RX : drop_frame\n(resume capture)
+
+@enduml

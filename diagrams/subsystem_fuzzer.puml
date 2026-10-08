@@ -1,0 +1,42 @@
+@startuml subsystem_fuzzer
+!theme plain
+hide empty description
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 60
+
+skinparam state {
+    BorderColor #1E293B
+    BackgroundColor #F8FAFC
+    FontColor #0F172A
+    ArrowColor #2563EB
+    FontSize 13
+}
+
+[*] --> FUZZ_STANDBY
+
+state FUZZ_STANDBY #F8FAFC
+state AWAIT_TRIGGER #F8FAFC
+state INJECT_GLITCH #FEF3C7
+state VERIFY_FLOAT #F8FAFC
+state FUZZ_COOLDOWN #F8FAFC
+state FAULT_CONTENTION #FEE2E2
+
+FUZZ_STANDBY -down-> AWAIT_TRIGGER : arm_cmd
+AWAIT_TRIGGER -down-> INJECT_GLITCH : pattern_match
+
+INJECT_GLITCH -down-> VERIFY_FLOAT : pulse_done [t < 50µs]
+
+VERIFY_FLOAT -down-> FUZZ_COOLDOWN : float_ok
+VERIFY_FLOAT -right-> FAULT_CONTENTION : timeout
+
+FUZZ_COOLDOWN -left-> FUZZ_STANDBY : cycle_done
+
+FAULT_CONTENTION -up-> FUZZ_STANDBY : safety_release\n(forced High-Z)
+
+@enduml

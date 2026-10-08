@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Build / generated artifacts
+build/
+*.uf2
+*.elf
+*.bin
+
+# Editor
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

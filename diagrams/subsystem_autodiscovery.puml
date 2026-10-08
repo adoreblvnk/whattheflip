@@ -1,0 +1,42 @@
+@startuml subsystem_autodiscovery
+!theme plain
+hide empty description
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 60
+
+skinparam state {
+    BorderColor #1E293B
+    BackgroundColor #F8FAFC
+    FontColor #0F172A
+    ArrowColor #2563EB
+    FontSize 13
+}
+
+[*] --> DISC_LISTEN
+
+state DISC_LISTEN #F8FAFC
+state GLOBAL_TRIAGE #F8FAFC
+state VERIFY_RHYTHM #F8FAFC
+state PROTO_LOCKED #F0FDF4
+state DISC_TIMEOUT #FEE2E2
+state "ABORTED" as ST_ABORT #FEE2E2
+
+DISC_LISTEN -down-> GLOBAL_TRIAGE : edges_detected
+GLOBAL_TRIAGE -down-> VERIFY_RHYTHM : triage_ok
+GLOBAL_TRIAGE -right-> DISC_TIMEOUT : ev_triage_fail
+
+VERIFY_RHYTHM -down-> PROTO_LOCKED : rhythm_ok
+VERIFY_RHYTHM -right-> DISC_TIMEOUT : rhythm_fail / timeout_2s
+
+DISC_TIMEOUT -up-> DISC_LISTEN : retry [retries < 3]
+DISC_TIMEOUT -down-> ST_ABORT : abort [retries >= 3]
+
+PROTO_LOCKED -down-> [*] : ev_proto_locked\n(export_mapping)
+
+@enduml

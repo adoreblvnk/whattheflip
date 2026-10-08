@@ -1,0 +1,126 @@
+@startuml task_interaction
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 50
+
+skinparam component {
+    BorderColor #1E293B
+    BackgroundColor #F8FAFC
+    FontColor #0F172A
+    FontSize 12
+    FontStyle bold
+}
+
+skinparam queue {
+    BackgroundColor #F0FDF4
+    BorderColor #16A34A
+    FontColor #14532D
+    FontSize 11
+}
+
+skinparam interface {
+    BackgroundColor #FEF2F2
+    BorderColor #DC2626
+    FontColor #7F1D1D
+    FontSize 11
+}
+
+skinparam collections {
+    BackgroundColor #EEF2FF
+    BorderColor #4F46E5
+    FontColor #312E81
+    FontSize 11
+}
+
+skinparam database {
+    BackgroundColor #EFF6FF
+    BorderColor #2563EB
+    FontColor #1E3A8A
+    FontSize 11
+}
+
+skinparam control {
+    BackgroundColor #FEE2E2
+    BorderColor #EF4444
+    FontColor #7F1D1D
+    FontSize 11
+}
+
+' ==================== 1. HARDWARE & ISRS ====================
+package "1. Hardware Interrupts" as PKG_HW #F8FAFC {
+    control "E-Stop ISR\n(GPIO9)" as ISR_EStop #FCA5A5
+    control "Probe Edge ISR\n(GPIO16/17/4/5)" as ISR_Probe #FDBA74
+    control "Radio Baseband ISR\n(2.4 GHz RF)" as ISR_Radio #93C5FD
+}
+
+' ==================== 2. ACQUISITION TASKS ====================
+package "2. Input & Acquisition Tasks" as PKG_ACQ #F8FAFC {
+    component "D1 Safety Supervisor\n[P1: Highest]" as TSK_Safety #FEE2E2
+    component "D4 Auto-Discovery\n[P4: Medium]" as TSK_Discovery #FFEDD5
+    component "D2 Wireless Engine\n[P2: High]" as TSK_Wireless #DBEAFE
+}
+
+' ==================== 3. IPC & BUFFERS ====================
+package "3. µT-Kernel 3.0 IPC & Buffers" as PKG_IPC #F1F5F9 {
+    interface "FLG_SAFETY_ABORT\n(Bit 0x01)" as FLG_Safety
+    queue "MBX_EDGES\n(Mailbox)" as MBX_Edges
+    interface "FLG_RF_READY\n(Bit 0x02)" as FLG_Radio
+    rectangle "MTX_PROBE_ACCESS\n(Probe Mutex)" as MTX_Probe #FEF3C7
+    collections "MPF_PACKETS\n(Zero-Copy Pool)" as MPF_Packets
+    queue "MBF_STORAGE\n(Message Buffer)" as MBF_Storage
+    queue "MBF_TELEMETRY\n(Message Buffer)" as MBF_Telemetry
+}
+
+' ==================== 4. CONSUMER TASKS ====================
+package "4. Processing & Consumer Tasks" as PKG_CONS #F8FAFC {
+    component "D3 Chaos Fuzzer\n[P3: Medium]" as TSK_Fuzzer #FEF3C7
+    component "D5 Storage Task\n[P5: Low]" as TSK_Storage #E0F2FE
+    component "D6 Web Dashboard\n[P6: Lowest]" as TSK_Dashboard #F3E8FF
+}
+
+' ==================== 5. OUTPUTS & SINKS ====================
+package "5. Hardware Targets & Sinks" as PKG_SINKS #F8FAFC {
+    component "D7 Probe Driver\n(Wired Victim)" as SINK_Probes #FED7AA
+    database "D8 Storage Driver\n(MicroSD .pcap)" as SINK_SD
+    component "D9 Network Driver\n(WebSocket Client)" as SINK_Web #FAF5FF
+}
+
+' --- 1 to 3: ISR signals IPC ---
+ISR_EStop -down-> FLG_Safety : I1
+ISR_Probe -down-> MBX_Edges : I2
+ISR_Radio -down-> FLG_Radio : I3
+
+' --- 3 to 2: IPC wakes Acquisition Tasks ---
+FLG_Safety -up-> TSK_Safety : I1
+MBX_Edges -up-> TSK_Discovery : I2
+FLG_Radio -up-> TSK_Wireless : I3
+
+' --- 2 to 3: Acquisition Tasks populate Buffers & Mutex ---
+TSK_Discovery -down-> MTX_Probe : I4
+TSK_Discovery -down-> MPF_Packets : I5\n(decoded wired frames)
+TSK_Wireless -down-> MPF_Packets : I5\n(RF frames)
+
+' --- 3 to 3: Pool feeds Queues ---
+MPF_Packets -down-> MBF_Storage : I6\n(packet ref)
+MPF_Packets -down-> MBF_Telemetry : I7\n(summary ref)
+
+' --- 3 to 4: IPC feeds Consumer Tasks ---
+MTX_Probe -down-> TSK_Fuzzer : I4\ntk_loc_mtx(TMO_POL)
+MBF_Storage -down-> TSK_Storage : I6
+MBF_Telemetry -down-> TSK_Dashboard : I7
+
+' --- Direct Safety Override ---
+TSK_Safety .down.> TSK_Fuzzer : I8\nDisarm (Force High-Z)
+
+' --- 4 to 5: Consumer Tasks write to Driver Modules ---
+TSK_Fuzzer -down-> SINK_Probes : I9\nGlitch Pulse (<=50us)
+TSK_Storage -down-> SINK_SD : I10\nWrite capture record
+TSK_Dashboard -down-> SINK_Web : I11\nTelemetry frame
+
+@enduml

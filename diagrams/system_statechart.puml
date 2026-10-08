@@ -1,0 +1,60 @@
+@startuml system_statechart
+!theme plain
+hide empty description
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam linetype ortho
+
+skinparam state {
+    BorderColor #1E293B
+    BackgroundColor #F8FAFC
+    FontColor #0F172A
+    ArrowColor #2563EB
+    FontSize 13
+}
+
+[*] --> BOOT_SELFTEST
+
+state BOOT_SELFTEST #F8FAFC
+state BOOT_FAILED #FEE2E2
+state FAULT_ESTOP #FEE2E2
+
+BOOT_SELFTEST -down-> IDLE_STANDBY : init_ok
+BOOT_SELFTEST -right-> BOOT_FAILED : init_fail
+
+state OPERATIONAL #F0FDF4 {
+    [*] --> IDLE_STANDBY
+    
+    state IDLE_STANDBY #F8FAFC
+    state MODE_CONFIG #F8FAFC
+    state AUTO_DISCOVERING #F8FAFC
+    state SNIFFING_ACTIVE #F8FAFC
+    state ARMED_TRIGGER #FEF3C7
+    state GLITCH_INJECTION #FEF3C7
+    state CAPTURE_COMPLETE #F8FAFC
+
+    IDLE_STANDBY -down-> MODE_CONFIG : configure
+    
+    MODE_CONFIG -down-> AUTO_DISCOVERING : mode_wired
+    MODE_CONFIG -right-> SNIFFING_ACTIVE : mode_wireless
+
+    AUTO_DISCOVERING -down-> SNIFFING_ACTIVE : proto_locked
+
+    SNIFFING_ACTIVE -down-> ARMED_TRIGGER : arm_fuzzer [mode == wired]
+    
+    ARMED_TRIGGER -down-> GLITCH_INJECTION : pattern_match
+    GLITCH_INJECTION -left-> SNIFFING_ACTIVE : pulse_done
+
+    SNIFFING_ACTIVE -down-> CAPTURE_COMPLETE : stop_capture
+    CAPTURE_COMPLETE -left-> IDLE_STANDBY : session_closed
+    
+    AUTO_DISCOVERING -left-> IDLE_STANDBY : abort
+}
+
+OPERATIONAL -left-> FAULT_ESTOP : estop_press || fault
+FAULT_ESTOP -up-> IDLE_STANDBY : reset
+
+@enduml
