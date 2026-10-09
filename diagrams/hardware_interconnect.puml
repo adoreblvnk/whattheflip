@@ -15,34 +15,37 @@ skinparam component {
     FontSize 12
 }
 
-' ==================== NODE 2: WIRED VICTIM ====================
-package "Node 2: Wired Victim (Raspberry Pi Pico)" as PKG_PICO #ECFDF5 {
-    component "GP0 (UART TX)" as P_GP0 #A7F3D0
-    component "GP1 (UART RX)" as P_GP1 #A7F3D0
-    component "GP4 (I2C SDA)" as P_GP4 #A7F3D0
-    component "GP5 (I2C SCL)" as P_GP5 #A7F3D0
-    component "GY-511 Compass\n(LSM303DLHC)" as P_SENSOR #6EE7B7
-    
-    P_SENSOR --> P_GP4 : I2C SDA
-    P_SENSOR --> P_GP5 : I2C SCL
-}
+' ==================== NODE 2: WIRED VICTIMS (BREADBOARD) ====================
+package "Node 2: Wired Victims (Dual RP2040 Breadboard Testbed)" as PKG_BREADBOARD #ECFDF5 {
+    package "Pico Victim A (UART Master / I2C Master)" as PKG_PICO_A #D1FAE5 {
+        component "GP0 (UART TX)" as PA_TX #A7F3D0
+        component "GP4 (I2C SDA)" as PA_SDA #A7F3D0
+        component "GP5 (I2C SCL)" as PA_SCL #A7F3D0
+    }
 
-' ==================== LEVEL SHIFTER ====================
-package "Bidirectional Level Shifter (TXS0104E)" as PKG_SHIFTER #FAF5FF {
-    component "Ch 0: HV0 <-> LV0" as LS0 #E9D5FF
-    component "Ch 1: HV1 <-> LV1" as LS1 #E9D5FF
-    component "Ch 2: HV2 <-> LV2" as LS2 #E9D5FF
-    component "Ch 3: HV3 <-> LV3" as LS3 #E9D5FF
-    component "Power Rails\nVCCA: 3.3V | VCCB: 3.3V/5V\nCommon Ground Plane" as LS_PWR #F3E8FF
+    package "Pico Victim B (UART Listener / I2C Slave)" as PKG_PICO_B #D1FAE5 {
+        component "GP1 (UART RX)" as PB_RX #A7F3D0
+        component "GP4 (I2C SDA)" as PB_SDA #A7F3D0
+        component "GP5 (I2C SCL)" as PB_SCL #A7F3D0
+    }
+
+    component "GY-511 Compass\n(LSM303DLHC)" as SENSOR #6EE7B7
+
+    ' Breadboard inter-pico links
+    PA_TX --> PB_RX : 3.3V UART Link (115200)
+    PA_SDA <--> PB_SDA : 3.3V I2C Bus (SDA)
+    PA_SCL <--> PB_SCL : 3.3V I2C Bus (SCL)
+    SENSOR --> PB_SDA : I2C SDA
+    SENSOR --> PB_SCL : I2C SCL
 }
 
 ' ==================== NODE 1: DIAGNOSTIC TOOL ====================
 package "Node 1: Diagnostic Tool (ESP32-C6 on Maker Pi Base)" as PKG_TOOL #F0F9FF {
-    package "Maker Pi Probe Headers" as TOOL_PROBES #E0F2FE {
-        component "Pin 1 (GP0) -> GPIO16" as T_P0 #BAE6FD
-        component "Pin 2 (GP1) -> GPIO17" as T_P1 #BAE6FD
-        component "Pin 4 (GP2) -> GPIO4"  as T_P2 #BAE6FD
-        component "Pin 5 (GP3) -> GPIO5"  as T_P3 #BAE6FD
+    package "Maker Pi Probe Headers (Direct 3.3V)" as TOOL_PROBES #E0F2FE {
+        component "Pin 6 (GP4) -> GPIO6"  as T_P0 #BAE6FD
+        component "Pin 7 (GP5) -> GPIO7"  as T_P1 #BAE6FD
+        component "Pin 9 (GP6) -> GPIO14" as T_P2 #BAE6FD
+        component "Pin 10 (GP7) -> GPIO15" as T_P3 #BAE6FD
     }
     
     package "Onboard Baseboard Hardware" as TOOL_BASE #F1F5F9 {
@@ -59,20 +62,13 @@ package "Node 3: Wireless Victim (ESP32-C6 Node B)" as PKG_WIRELESS #EFF6FF {
     component "802.15.4 Transmitter\n(Raw Data | Ch 15)" as W_ZIGBEE #BFDBFE
 }
 
-' --- Pin-to-Pin Orthogonal Nets ---
-P_GP0 --> LS0 : UART TX
-LS0 --> T_P0   : PROBE_0
+' --- Direct 3.3V Wire-to-Wire Sniffing & Fault Injection ---
+PA_TX --> T_P0  : PROBE_0 (UART TX Sniff/Glitch)
+PB_RX <-- T_P1  : PROBE_1 (UART RX Sniff)
+PA_SDA <--> T_P2 : PROBE_2 (I2C SDA Sniff/ACK NACK)
+PA_SCL <--> T_P3 : PROBE_3 (I2C SCL Sniff/Stretch)
 
-P_GP1 <-- LS1 : UART RX
-LS1 <-- T_P1   : PROBE_1
-
-P_GP4 <--> LS2 : I2C SDA
-LS2 <--> T_P2  : PROBE_2
-
-P_GP5 --> LS3 : I2C SCL
-LS3 --> T_P3   : PROBE_3
-
-' --- Wireless Over-the-Air Link (Clean Route) ---
+' --- Wireless Over-the-Air Link ---
 W_AP -left-> PKG_TOOL : 2.4 GHz RF
 W_ZIGBEE -left-> PKG_TOOL : 2.4 GHz RF
 
