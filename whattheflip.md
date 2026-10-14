@@ -18,20 +18,19 @@ To eliminate reliance on external uncontrolled signals and definitively substant
 ![Figure 1: Hardware Interconnect & Maker Pi Base Pinout](diagrams/hardware_interconnect.png)
 
 ### The Three Operational Pillars:
-1. **Node 1: The Diagnostic Tool (ESP32-C6):** Runs $\mu\text{T-Kernel}$ 3.0 on a 32-bit RISC-V core @ 160 MHz. It performs passive physical bus sniffing (UART, I2C, SPI), promiscuous wireless monitoring (Wi-Fi 6, 802.15.4 Zigbee), and active non-destructive chaos fault injection.
-2. **Node 2: The Wired Victim (Raspberry Pi Pico):** Dedicated target hardware running operational victim firmware. It drives active UART transmissions, I2C sensor transactions reading a physical GY-511 accelerometer, and SPI peripheral exchanges. It provides the physical target for auto-discovery and in-flight glitch testing, outputting its error detection and recovery statistics directly to a serial monitor.
+1. **Node 1: The Diagnostic Tool (ESP32-C6):** Runs $\mu\text{T-Kernel}$ 3.0 on a 32-bit RISC-V core @ 160 MHz. It performs passive physical bus sniffing (UART, I2C), promiscuous wireless monitoring (Wi-Fi 6, 802.15.4 Zigbee), and active non-destructive chaos fault injection.
+2. **Node 2: The Wired Victims (Dual RP2040 on Maker Pi Bases + Breadboard Testbed):** Dedicated target hardware on a shared breadboard running operational victim firmware: Victim A acts as UART TX & I2C Master reading a physical GY-511 accelerometer; Victim B acts as UART RX listener & I2C Slave. Both Picos are seated on Cytron Maker Pi Base carrier boards for hardware reset buttons and per-pin LED monitoring, jumpered to the shared breadboard bus. Provides physical targets for auto-discovery and in-flight glitch testing, outputting error detection and recovery statistics directly to a serial monitor.
 3. **Node 3: The Wireless Victim (ESP32-C6 Node B):** Dedicated over-the-air target device running an isolated Wi-Fi SoftAP and an IEEE 802.15.4 Zigbee transmitter. It acts as an uncorrupted RF signal source for promiscuous packet capture and wireless stress testing.
 
 ---
 
-## 2. Supported Protocol Scope (3 Wired + 2 Wireless)
+## 2. Supported Protocol Scope (2 Wired + 2 Wireless)
 
-| Wired Protocols (via Level Shifter) | Wireless Protocols (2.4 GHz RF) |
+| Wired Protocols (Direct 3.3V) | Wireless Protocols (2.4 GHz RF) |
 |---|---|
 | **1. UART** (9600 to 115200 baud) | **1. Wi-Fi 6** (IEEE 802.11ax/b/g/n) |
 | **2. I2C** (100 kHz & 400 kHz) | **2. IEEE 802.15.4** (Zigbee 3.0 / Thread) |
-| **3. SPI** (Mode 0, up to 10 MHz) | *(BLE explicitly excluded)* |
-
+| *(SPI sniffing dropped)* | *(BLE explicitly excluded)* |
 ### Protocol Scoping Decision: Bluetooth (BLE) Omission
 * **Architectural Justification:** ESP-IDF provides no native link-layer promiscuous sniffing API for connected Bluetooth Low Energy (`esp_ble_set_promiscuous` does not exist). BLE uses 37 pseudo-randomly hopping data channels that standard ESP32-C6 baseband hardware cannot intercept without specialized sniffing silicon. Furthermore, initializing the NimBLE stack consumes $\sim 200\text{ KB}$ Flash and $\sim 45\text{ KB}$ SRAM, degrading memory buffers for $\mu\text{T-Kernel}$ tasks.
 * **Decision:** Bluetooth is **explicitly excluded** from the capture scope. Wireless monitoring focuses exclusively on **Wi-Fi 6 (802.11ax)** and **IEEE 802.15.4 (Zigbee)** where native hardware promiscuous frame capture (`esp_wifi_set_promiscuous` and `esp_ieee802154_enable_promiscuous`) provides complete, raw link-layer frame access compatible with standard Wireshark PCAP encapsulation.
@@ -55,7 +54,7 @@ To eliminate reliance on external uncontrolled signals and definitively substant
 ### 4.1 Functional Requirements (FR)
 *Requirements specify purely external observable behavior ("what") and tolerances without restricting internal implementation:*
 * **FR1 (Passive Signal Acquisition):** The system shall passively acquire digital signals across 4 probe pins with an input leakage current $\le 1\,\mu\text{A}$ ($R_{in} \ge 1\text{ M}\Omega$) and a timing resolution $\le 1\,\mu\text{s}$ (backed by $\mu\text{T-Kernel}$ 1 MHz physical timer `tk_*ptmr`).
-* **FR2 (Automated Protocol Classification):** The auto-discovery engine shall classify standard UART ($9600\text{ to }115200\text{ baud} \pm 2\%$), standard I2C ($100\text{ kHz and }400\text{ kHz}$), and SPI Mode 0 (up to $1\text{ MHz}$) signals within $\le 500\text{ ms}$ of continuous bus activity.
+* **FR2 (Automated Protocol Classification):** The auto-discovery engine shall classify standard UART ($9600\text{ to }115200\text{ baud} \pm 2\%$) and standard I2C ($100\text{ kHz and }400\text{ kHz}$) signals within $\le 500\text{ ms}$ of continuous bus activity.
 * **FR3 (Dynamic Signal Routing):** The system shall programmatically map any of the 4 probe pins to internal protocol decoding channels without requiring physical jumper wire alterations.
 * **FR4 (Over-the-Air Wireless Capture):** The wireless engine shall capture raw 802.11 management frames and raw IEEE 802.15.4 frames across 2.4 GHz channels 11–26, extracting received signal strength (RSSI), channel ID, and microsecond timestamps.
 * **FR5 (Physical Bus Fault Injection):** When armed by the user, the chaos engine shall inject non-destructive protocol faults into the target bus, specifically single bit-inversions, I2C ACK $\to$ NACK suppressions, and clock stretching up to $50\,\mu\text{s} \pm 10\%$.
@@ -68,7 +67,7 @@ To eliminate reliance on external uncontrolled signals and definitively substant
 * **NFR1 (Real-Time Preemption):** Emergency stop and safety disarm routines shall preempt all background processing tasks within $\le 5\text{ ms}$ of physical switch contact.
 * **NFR2 (Deterministic Memory Operation):** The firmware shall perform zero dynamic heap allocations (`malloc`/`free`) during active monitoring and fault injection phases.
 * **NFR3 (Packet Ingestion Reliability):** The capture pipeline shall achieve $0\%$ packet drop rate for continuous wired streams up to $500\text{ kbps}$ (covering UART 115200 and I2C Fast Mode), and buffer wireless bursts of up to 32 consecutive frames without data loss.
-* **NFR4 (Over-Voltage Protection):** The physical probe interface shall tolerate continuous input voltages up to $5.5\text{ V}$ without exceeding the microcontroller pad maximum rating of $3.6\text{ V}$.
+* **NFR4 (Voltage Level Compliance):** The physical probe interface shall maintain bus voltage compliance within the 3.3 V CMOS domain ($0.0\text{ V to }3.3\text{ V} \pm 5\%$, absolute maximum $\le 3.6\text{ V}$) without external level shifters, with a parasitic capacitive loading $\le 25\text{ pF}$ per channel.
 * **NFR5 (Fault Timing Precision):** Fault injection pulses shall synchronize to target bus trigger edges with a timing jitter of $< 500\text{ ns}$ (well within the $8.68\,\mu\text{s}$ bit window of 115200 baud UART).
 
 ---
@@ -84,26 +83,26 @@ The diagnostic tool consists of the **Waveshare ESP32-C6-Pico-M** mounted direct
 
 | Maker Pi Pin | Signal Name | ESP32-C6 Pin | Interface Type | Owning Task / Arbitration | Electrical & Hardware Notes |
 |:---:|---|:---:|---|---|---|
-| **Pin 1 (GP0)** | `PROBE_0` | **GPIO16** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | High-speed native GPIO. Level-shifted to Wired Victim GP0. Baseboard blue LED indicator. |
-| **Pin 2 (GP1)** | `PROBE_1` | **GPIO17** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | High-speed native GPIO. Level-shifted to Wired Victim GP1. Baseboard blue LED indicator. |
-| **Pin 4 (GP2)** | `PROBE_2` | **GPIO4** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | High-speed native GPIO. Level-shifted to Wired Victim GP4 (SDA). Baseboard blue LED indicator. |
-| **Pin 5 (GP3)** | `PROBE_3` | **GPIO5** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | High-speed native GPIO. Level-shifted to Wired Victim GP5 (SCL). Baseboard blue LED indicator. |
+| **Pin 37 (GP4)** | `PROBE_0` | **GPIO4** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | Native GPIO. Direct 3.3V wire to Victim A GP0 (UART TX). Baseboard blue LED indicator. Strapping pin (High-Z during reset). |
+| **Pin 36 (GP5)** | `PROBE_1` | **GPIO5** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | Native GPIO. Direct 3.3V wire to Victim B GP1 (UART RX). Baseboard blue LED indicator. Strapping pin (High-Z during reset). |
+| **Pin 35 (GP6)** | `PROBE_2` | **GPIO6** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | Native GPIO. Direct 3.3V wire to Victim A GP4 / GY-511 SDA. Baseboard blue LED indicator. Clean GPIO / LP_I2C_SDA. |
+| **Pin 34 (GP7)** | `PROBE_3` | **GPIO7** | GPIO / Edge IRQ | Shared (`AutoDiscovery` / `Fuzzer`) | Native GPIO. Direct 3.3V wire to Victim A GP5 / GY-511 SCL. Baseboard blue LED indicator. Clean GPIO / LP_I2C_SCL. |
 | **Pin 14 (GP10)** | `SD_SCK` | **GPIO18** | Hardware SPI | `Storage_Task` | **Hardwired to Maker Pi onboard MicroSD slot**. 10 MHz SPI Clock. |
 | **Pin 15 (GP11)** | `SD_MOSI` | **GPIO19** | Hardware SPI | `Storage_Task` | **Hardwired to Maker Pi onboard MicroSD slot**. SPI Master Out Slave In. |
 | **Pin 16 (GP12)** | `SD_MISO` | **GPIO20** | Hardware SPI | `Storage_Task` | **Hardwired to Maker Pi onboard MicroSD slot**. SPI Master In Slave Out. |
 | **Pin 20 (GP15)** | `SD_CS` | **EXIO7** | IO Expander / CS | `Storage_Task` | **Hardwired to Maker Pi onboard MicroSD slot**. Active-Low Chip Select via TCA9554. |
 | **Pin 12 (GP9)** | `E_STOP_BTN` | **GPIO9** | GPIO Input (Pull-Up)| `Safety_Supervisor_Task` | **Onboard BOOT pushbutton**. Active-Low, $\le 5\text{ ms}$ High-Z interrupt (avoids I2C short). |
 | **Pin 11 (GP8)** | `STATUS_LED` | **GPIO8** | WS2812 / DIN | `Safety_Supervisor_Task` | **Onboard WS2812 Addressable RGB LED** (Green: Ready, Blue: Sniff, Red: Fault). |
-| **Pin 24 (GP18)** | `BUZZER_OUT` | **EXIO3 / GPIO15**| PWM / Audio | `Safety_Supervisor_Task` | Maker Pi Base onboard piezo buzzer (Pin 24) or external resonant buzzer on GPIO15. |
+| **Pin 24 (GP18)** | `BUZZER_OUT` | **EXIO3** | PWM / Audio | `Safety_Supervisor_Task` | Maker Pi Base onboard piezo buzzer driven via TCA9554 expander `EXIO3`. |
 | **Pins 26 / 27** | `EXP_I2C` | **GPIO22 / 23** | I2C Master Bus | System Init | Dedicated to onboard TCA9554PWR expander. **Baseboard Buttons 1 & 2 must NOT be pressed**. |
-| **Pin 36 (3V3)** | `VCC_LV` | **3V3 OUT** | Power Output | Hardware Interconnect | 3.3V reference power to low-voltage side of TXS0104E level shifter. |
-| **Pin 38 (GND)** | `GND` | **GND** | Ground Plane | Hardware Interconnect | Common reference ground unified across Maker Pi Base, Level Shifter, and Pico Victim. |
+| **Pin 36 (3V3)** | `VCC_3V3` | **3V3 OUT** | Power Output | Hardware Interconnect | 3.3V supply rail to breadboard and GY-511 sensor. |
+| **Pin 38 (GND)** | `GND` | **GND** | Ground Plane | Hardware Interconnect | Common reference ground unified across Maker Pi Base, Breadboard, Dual RP2040 Victims, and GY-511 sensor. |
 
-### 5.2 Node 2: Wired Victim (Raspberry Pi Pico)
-* **UART Channel:** GP0 (TX) and GP1 (RX) connected to Shifter HV0 and HV1 $\to$ `PROBE_0` and `PROBE_1`.
-* **I2C Channel:** GP4 (SDA) and GP5 (SCL) connected to physical GY-511 sensor and Shifter HV2 and HV3 $\to$ `PROBE_2` and `PROBE_3`.
-* **SPI Channel:** GP16 (MISO), GP19 (MOSI), GP18 (SCK), GP17 (CS) wired for multi-wire SPI tests.
-* **Telemetry Output:** USB CDC serial port reporting packet error counts, CRC failures, and recovery latencies to the workstation.
+### 5.2 Node 2: Wired Victims (Dual Raspberry Pi Pico RP2040 on Maker Pi Bases)
+Both victim Picos are seated on Cytron Maker Pi Base carrier boards for hardware reset buttons and per-pin LED indicators, using female header jumpers to establish the shared breadboard bus:
+* **Victim A (UART TX & I2C Master):** GP0 (TX) connected directly to `PROBE_0` (Waveshare GP4 / `GPIO4`). GP4 (SDA) and GP5 (SCL) connected to physical GY-511 sensor and directly to `PROBE_2` / `PROBE_3` (Waveshare GP6/GP7 / `GPIO6`/`GPIO7`).
+* **Victim B (UART RX Listener & I2C Slave):** GP1 (RX) connected directly to `PROBE_1` (Waveshare GP5 / `GPIO5`). Responds as secondary I2C slave address on shared breadboard I2C bus.
+* **Telemetry Output:** Dedicated USB CDC serial ports on both Pico boards reporting packet error counts, CRC failures, and recovery latencies to the workstation.
 
 ### 5.3 Node 3: Wireless Victim (ESP32-C6 Node B)
 * Independent wireless target node operating on 2.4 GHz RF.
@@ -203,8 +202,8 @@ Inter-task communication is strictly decoupled using native $\mu\text{T-Kernel}$
 
 | Test ID | Test Category | Setup / Stimulus | Expected Result | Pass/Fail Criteria |
 |---|---|---|---|---|
-| **TC-1.1** | UART Passive Auto-Discovery | Wired Victim sends 115200 baud UART on GP0. Probes connected to GP0–GP3. | Sniffer classifies UART, identifies TX pin, and locks baud rate to $115200 \pm 2\%$. | Pass if detected within $\le 500\text{ ms}$; Fail if timeout or wrong protocol. |
-| **TC-1.2** | I2C Passive Auto-Discovery | Wired Victim reads GY-511 sensor on GP4/GP5 at 100 kHz. Probes connected to GP0–GP3. | Sniffer classifies I2C, identifies SCL and SDA pins, confirms clock period $= 10.0\,\mu\text{s} \pm 25\%$. | Pass if SCL/SDA identified correctly in $\le 500\text{ ms}$; Fail if misclassified. |
+| **TC-1.1** | UART Passive Auto-Discovery | Victim A sends 115200 baud UART on GP0. Probes connected to GP4–GP7. | Sniffer classifies UART, identifies TX pin, and locks baud rate to $115200 \pm 2\%$. | Pass if detected within $\le 500\text{ ms}$; Fail if timeout or wrong protocol. |
+| **TC-1.2** | I2C Passive Auto-Discovery | Victim A reads GY-511 sensor on GP4/GP5 at 100 kHz. Probes connected to GP4–GP7. | Sniffer classifies I2C, identifies SCL and SDA pins, confirms clock period $= 10.0\,\mu\text{s} \pm 25\%$. | Pass if SCL/SDA identified correctly in $\le 500\text{ ms}$; Fail if misclassified. |
 | **TC-1.3** | Global Pin Filter Exclusivity | Probes connected to 3 simultaneously toggling lines (UART + I2C). | Sniffer classifies protocol as `UNKNOWN` and aborts classification. | Pass if system rejects ambiguous mixed-signal input; Fail if false positive returned. |
 | **TC-2.1** | I2C ACK Suppression Fuzzing | Victim actively reading GY-511. Fuzzer configured to force SDA HIGH on byte 2 ACK. | Victim logs `[I2C NACK]` on serial monitor, executes bus recovery, and resumes sampling. | Pass if victim reports NACK and retries; Fail if victim hangs or fuzzer misses clock. |
 | **TC-2.2** | UART In-Flight Bit Flip | Victim sends telemetry packets with CRC-16. Fuzzer inverts bit 4 of byte 8. | Victim logs `[CHECKSUM MISMATCH]` and drops corrupted frame without system crash. | Pass if exactly 1 frame dropped per trigger; Fail if line locked LOW. |
@@ -219,28 +218,27 @@ Inter-task communication is strictly decoupled using native $\mu\text{T-Kernel}$
 ## 10. Lecture 6.1 Traceability Matrix (V-Model Verification)
 
 *Formatted strictly to the 5-column standard from Lecture 6.1 Slide #5:*
+**Requirement ID → Use Case / Sequence ID → LLD Function Name → Test ID → Expected Result (Pass/Fail)**
 
-$$\text{Requirement ID} \longrightarrow \text{Use Case / Sequence ID} \longrightarrow \text{LLD Function Name} \longrightarrow \text{Test ID} \longrightarrow \text{Verification Status}$$
-
-| Requirement ID | Use Case / Sequence ID | LLD Function Name | Test ID | Verification Status |
-|---|---|---|---|:---:|
-| **FR1** (Passive Probing) | `UC-1.1` (Sample Bus Lines) | `probe_sample_edges()` | **TC-1.1** | Planned (Architecture Freeze) |
-| **FR2** (Auto-Discovery) | `UC-1.2` (Classify Protocol) | `analyze_for_i2c()`, `analyze_for_uart()` | **TC-1.2** | Planned (Architecture Freeze) |
-| **FR3** (Dynamic Reconfig) | `UC-1.3` (Map Peripheral Pins) | `gpio_matrix_route_pins()` | **TC-1.1** | Planned (Architecture Freeze) |
-| **FR4** (Wireless Capture) | `UC-2.1` (Capture 802.11 Frames)| `wifi_promiscuous_rx_cb()` | **TC-3.1** | Planned (Architecture Freeze) |
-| **FR4** (Zigbee Capture) | `UC-2.2` (Capture 802.15.4) | `ieee802154_rx_cb()` | **TC-3.2** | Planned (Architecture Freeze) |
-| **FR5** (I2C Fault Injection)| `UC-3.1` (Suppress I2C ACK) | `fuzzer_inject_i2c_nack()` | **TC-2.1** | Planned (Architecture Freeze) |
-| **FR5** (UART Bit Flip) | `UC-3.2` (Invert UART Bit) | `fuzzer_invert_uart_bit()` | **TC-2.2** | Planned (Architecture Freeze) |
-| **FR6** (Wireless Stress) | `UC-3.3` (Inject Deauth Frame)| `wifi_inject_deauth_frame()` | **TC-3.1** | Planned (Architecture Freeze) |
-| **FR7** (Emergency Stop) | `UC-4.1` (E-Stop Abort) | `safety_abort_to_high_z()` | **TC-4.1** | Planned (Architecture Freeze) |
-| **FR8** (PCAP SD Logging) | `UC-5.1` (Write PCAP Record) | `pcap_write_frame()` | **TC-4.2** | Planned (Architecture Freeze) |
-| **FR9** (WebSocket Stream) | `UC-5.2` (Stream Telemetry) | `ws_broadcast_telemetry()` | **TC-5.1** | Planned (Architecture Freeze) |
-| **NFR1** (E-Stop $\le 5\text{ ms}$)| `UC-4.1` (E-Stop Latency) | `safety_abort_to_high_z()` | **TC-4.1** | Planned (Architecture Freeze) |
-| **NFR2** (Zero Dynamic Heap)| `UC-1.1` (Memory Allocation)| `tk_get_mpf()` | **TC-4.2** | Planned (Architecture Freeze) |
-| **NFR3** (Burst Reliability) | `UC-2.1` (Queue Reliability) | `ring_buffer_push()` | **TC-3.1** | Planned (Architecture Freeze) |
-| **NFR4** (Voltage Clamp) | `UC-1.1` (Electrical Clamping)| Hardware Level Shifter | **TC-1.1** | Planned (Architecture Freeze) |
-| **NFR5** (Jitter $< 500\text{ ns}$) | `UC-3.1` (Glitch Precision) | `timer_sync_glitch()` | **TC-2.1** | Planned (Architecture Freeze) |
-
+| Requirement ID | Use Case / Sequence ID | LLD Function Name | Test ID | Expected Result | Verification Status |
+|---|---|---|---|---|:---:|
+| **FR1** (Passive Probing) | `UC-1.1` (Sample Bus Lines) | `probe_sample_edges()` | **TC-1.1** | Edge timestamps resolved to ≤ 1 µs; leakage ≤ 1 µA | Planned |
+| **FR2** (Auto-Discovery) | `UC-1.2` (Classify Protocol) | `analyze_for_i2c()`, `analyze_for_uart()` | **TC-1.2** | Correct protocol identified within ≤ 500 ms for UART and I2C buses | Planned |
+| **FR3** (Dynamic Reconfig) | `UC-1.3` (Map Peripheral Pins) | `gpio_matrix_route_pins()` | **TC-1.3** | Any probe pin routed to any decode channel; ready ≤ 10 ms, no rewiring | Planned |
+| **FR4** (Wi-Fi Capture) | `UC-2.1` (Capture 802.11 Frames) | `wifi_promiscuous_rx_cb()` | **TC-3.1** | ≥ 99% of injected management frames logged with RSSI/channel/timestamp | Planned |
+| **FR4** (Zigbee Capture) | `UC-2.2` (Capture 802.15.4) | `ieee802154_rx_cb()` | **TC-3.2** | ≥ 99% of injected 802.15.4 frames logged on channels 11 to 26 | Planned |
+| **FR5** (I2C Fault Injection) | `UC-3.1` (Suppress I2C ACK) | `fuzzer_inject_i2c_nack()` | **TC-2.1** | Target ACK converted to NACK; line released ≤ 50 µs | Planned |
+| **FR5** (UART Bit Flip) | `UC-3.2` (Invert UART Bit) | `fuzzer_invert_uart_bit()` | **TC-2.2** | Target bit inverted in-flight; no residual bus drive | Planned |
+| **FR6** (Wireless Stress) | `UC-3.3` (Inject Deauth Frame) | `wifi_inject_deauth_frame()` | **TC-3.1** | Deauth emitted ≤ 100 ms after arm; victim re-associates | Planned |
+| **FR7** (Emergency Stop) | `UC-4.1` (E-Stop Abort) | `safety_abort_to_high_z()` | **TC-4.1** | All probe lines High-Z ≤ 5 ms after switch contact | Planned |
+| **FR8** (PCAP SD Logging) | `UC-5.1` (Write PCAP Record) | `pcap_write_frame()` | **TC-4.2** | Written file opens in Wireshark; byte-exact vs. source | Planned |
+| **FR9** (WebSocket Stream) | `UC-5.2` (Stream Telemetry) | `ws_broadcast_telemetry()` | **TC-5.1** | Dashboard refresh 500 to 1000 ms; fault alert ≤ 200 ms | Planned |
+| **NFR1** (Timing Resolution) | `UC-1.1` (Hardware Timer) | `tk_ptmr_*()` | **TC-1.1** | Physical timer resolution ≤ 1 µs confirmed on logic analyzer | Planned |
+| **NFR2** (Voltage Compliance) | `UC-1.1` (Direct 3.3V Logic) | Probe Driver (Direct 3.3V) | **TC-1.4** | Direct 3.3V bus levels (0.0 V to 3.3 V ± 5%); rise time degradation ≤ 50 ns | Planned |
+| **NFR5** (Zero Dynamic Heap) | `UC-1.1` (Memory Allocation) | `tk_get_mpf()` | **TC-4.2** | 0 heap allocations over ≥ 10 min continuous run | Planned |
+| **NFR8** (Jitter < 500 ns) | `UC-3.1` (Glitch Precision) | `timer_sync_glitch()` | **TC-2.1** | Edge-to-pulse jitter < 500 ns on oscilloscope | Planned |
+| **NFR9** (Burst Reliability) | `UC-2.1` (Queue Reliability) | `ring_buffer_push()` | **TC-3.1** | ≤ 0.1% drop at 500 kbps; ≥ 32-frame burst buffered | Planned |
+| **NFR11** (E-Stop ≤ 5 ms) | `UC-4.1` (E-Stop Latency) | `safety_abort_to_high_z()` | **TC-4.1** | Measured preemption ≤ 5 ms on oscilloscope | Planned |
 ---
 
 ## 11. Assumptions & Pre-Integration Validation Matrix
@@ -252,6 +250,8 @@ $$\text{Requirement ID} \longrightarrow \text{Use Case / Sequence ID} \longright
 | **A3** | The ESP32-C6 promiscuous packet filter captures raw 802.11 management frames without dropping frames at burst rates up to 50–100 pkts/s. | Dropped beacon frames cause incomplete Wireshark trace exports. | Blast the sniffer with a 100 pkt/s beacon generator (Node 3); compare transmitted vs. logged frame sequence counters. | Zayne Lee | Open |
 | **A4** | SPI FAT32 MicroSD write latency spikes ($\le 40\text{ ms}$) can be fully absorbed by an 8 KB pre-allocated packet ring buffer. | Buffer overflow during SD write stalls drops incoming physical/wireless packets. | Simulate a 50 ms SD write stall while streaming UART traffic at 115200 baud; verify zero dropped bytes in memory logs. | Annie Goh | Open |
 | **A5** | The WebSocket telemetry server can stream 1–2 Hz packet updates over Wi-Fi without starving the $\mu\text{T-Kernel}$ scheduler. | Network stack CPU load introduces jitter into physical bus sampling. | Benchmark system timer jitter while serving 3 concurrent WebSocket clients running telemetry streams at 1 Hz. | Joseph Poon | Open |
+| **A6** | ESP-IDF on the ESP32-C6 permits raw 802.11 frame transmission (`esp_wifi_80211_tx`) of deauthentication frames against the testbed victim node, without being silently filtered by the stack. | Deauth stress injection (FR6) cannot be demonstrated; feature must drop to stretch scope. | Transmit a crafted deauth frame at the testbed SoftAP (Node 3) and confirm via the sniffer that the frame is emitted and the victim re-associates; if filtered, fall back to 802.15.4-only stress or beacon-flood. | Zayne Lee | Open |
+| **A7** | `GPIO15` (`PROBE_3` / Maker Pi `GP7`) functions as a JTAG source select strapping pin during ESP32-C6 boot; holding probes at High-Z or keeping victims quiescent during reset preserves default USB Serial/JTAG operation. | Victim line pulling `GPIO15` LOW during ESP32-C6 power-on redirects JTAG to external pins, requiring a board power cycle to restore USB JTAG debugging. | Connect victim I2C SCL to `GP7`; verify via oscilloscope and serial log that ESP32-C6 boots normally into $\mu\text{T-Kernel}$ application mode; insert $1\text{ k}\Omega$ series isolation resistor if boot contention is observed. | Tan Yan Qi | Open |
 
 ---
 
@@ -263,12 +263,13 @@ $$\text{Requirement ID} \longrightarrow \text{Use Case / Sequence ID} \longright
 * **Unrealistic Ideas Rejected:** AI suggested implementing full on-chip protocol decoding for USB 2.0 High-Speed. This was rejected because USB 480 Mbps signaling far exceeds the ESP32-C6 GPIO sampling bandwidth ($40\text{ MHz}$ Nyquist limit).
 
 ### 12.2 Team-Reviewed Architecture Freeze Decisions
-1. **Selection of 3-Node Closed-Loop Testbed:** Rather than testing against random uncontrolled devices, building dedicated Wired (Pico) and Wireless (ESP32-C6) victims provides reproducible ground truth to rigorously prove technical scope to evaluators.
+1. **Selection of 4-Node Closed-Loop Testbed:** Rather than testing against random uncontrolled devices, building dedicated Wired Victims (Dual RP2040 on Maker Pi bases jumpered to a shared breadboard: Victim A as UART TX/I2C Master, Victim B as UART RX/I2C Slave) and Wireless Victim (ESP32-C6 Node B) provides reproducible ground truth to rigorously prove technical scope to evaluators without physical rewiring.
 2. **Mounting on Cytron Maker Pi Pico Base:** Eliminates external MicroSD breakout module by utilizing the baseboard's onboard spring-push SD slot; provides per-pin blue LED diagnostics and clean benchtop mounting.
 3. **Exclusion of Physical OLED Screen:** A 0.96" I2C display was dropped to conserve 1 KB of RAM, prevent I2C bus contention, and eliminate display-related task blocking. Telemetry is streamed over Wi-Fi to a responsive laptop web dashboard.
-4. **Mandatory 3.3V/5V Bidirectional Level Shifter:** External target buses may operate at 5V logic (e.g., standard Arduino boards). Direct connection would destroy the ESP32-C6 3.6V-tolerant pads; a level shifter was mandated as an architectural invariant.
-5. **Omission of Bluetooth (BLE) Promiscuous Mode:** Avoids unfulfillable claims about raw link-layer sniffing, saves 45 KB SRAM, and keeps wireless capture focused on native Wi-Fi 6 + 802.15.4 Zigbee.
-
+4. **Drop Level Shifter in Favor of Direct 3.3V Bus Coupling:** Both ESP32-C6 diagnostic tool and RP2040 target victims operate natively on 3.3V IO rails ($V_{abs} \le 3.63\text{ V}$). Direct connection eliminates $\sim 10\text{ ns}$ propagation delay, prevents open-drain rise-time degradation, and eliminates breadboard wiring clutter.
+5. **Drop Passive SPI Sniffing from Scope:** 4-wire SPI consumes all 4 probe channels, lacks addressing/ACK framing for meaningful chaos fuzzing, and high clock rates push GPIO interrupt limits. Focuses implementation depth on UART and I2C.
+6. **Relocate Probes to GP4–GP7 and Reclaim UART0:** Shifts probes to GP4–GP7 (GPIO4, GPIO5, GPIO6, GPIO7), leaving native low-power UART/XTAL pins free. Probes are kept in High-Z input mode during boot to ensure normal reset without triggering strapping modes.
+7. **Omission of Bluetooth (BLE) Promiscuous Mode:** Avoids unfulfillable claims about raw link-layer sniffing, saves 45 KB SRAM, and keeps wireless capture focused on native Wi-Fi 6 + 802.15.4 Zigbee.
 ### 12.3 Final AI-Vetted Gap Check
 * **Gap Identified by AI:** Simultaneous continuous capture across Wi-Fi and 802.15.4 is physically impossible on a single RF front-end.
   * **Team Response:** *Accepted as Risk / Documented Design Constraint.* The ESP32-C6 features one shared 2.4 GHz radio. The system implements time-multiplexed capture modes rather than true simultaneous multi-protocol RF reception.
@@ -282,7 +283,7 @@ $$\text{Requirement ID} \longrightarrow \text{Use Case / Sequence ID} \longright
 ## 13. Design Consistency Audit (Section 9 Template Compliance)
 
 * **1. Which task owns each hardware device?**
-  * `AutoDiscovery_Task` and `Chaos_Fuzzer_Task` dynamically share the 4 target probe lines on Maker Pi Pins 1, 2, 4, 5 (ESP32-C6 `GPIO16`, `GPIO17`, `GPIO4`, `GPIO5`), arbitrated via `MTX_PROBE_ACCESS`.
+  * `AutoDiscovery_Task` and `Chaos_Fuzzer_Task` dynamically share the 4 target probe lines on GP4–GP7 (ESP32-C6 `GPIO4`, `GPIO5`, `GPIO6`, `GPIO7`), arbitrated via `MTX_PROBE_ACCESS`.
   * `Wireless_Engine_Task` owns the 2.4 GHz radio transceiver baseband.
   * `Storage_Task` owns the Maker Pi onboard MicroSD card slot hardwired to physical pins 14–16 and 20 (ESP32-C6 `GPIO18`, `GPIO19`, `GPIO20`, and `EXIO7`).
   * `Safety_Supervisor_Task` owns the emergency stop button on Maker Pi Pin 12 (`GPIO9` BOOT switch), status NeoPixel (`GPIO8`), and alert buzzer (`EXIO3` / `GPIO15`).
@@ -302,4 +303,4 @@ $$\text{Requirement ID} \longrightarrow \text{Use Case / Sequence ID} \longright
 * **5. What changes are still expected after the Week 6 review?**
   * Confirmation of empirical rise-time tolerances during Week 8 hardware wiring tests.
   * Fine-tuning of SPI DMA block transfer sizes and ring buffer depths based on measured SD write latency benchmarks.
-  * Validation of assumptions A1 through A5 using physical oscilloscope and network traffic generator measurements before Week 10 Subsystems Check-in.
+  * Validation of assumptions A1 through A7 using physical oscilloscope and network traffic generator measurements before Week 10 Subsystems Check-in.

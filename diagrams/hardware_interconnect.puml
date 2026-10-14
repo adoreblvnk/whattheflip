@@ -15,15 +15,15 @@ skinparam component {
     FontSize 12
 }
 
-' ==================== NODE 2: WIRED VICTIMS (BREADBOARD) ====================
-package "Node 2: Wired Victims (Dual RP2040 Breadboard Testbed)" as PKG_BREADBOARD #ECFDF5 {
-    package "Pico Victim A (UART Master / I2C Master)" as PKG_PICO_A #D1FAE5 {
+' ==================== NODE 2: WIRED VICTIMS (MAKER PI BASES + BREADBOARD) ====================
+package "Node 2: Wired Victims (Dual RP2040 on Maker Pi Bases + Breadboard Bus)" as PKG_BREADBOARD #ECFDF5 {
+    package "Pico Victim A on Maker Pi Base\n(UART Master / I2C Master)" as PKG_PICO_A #D1FAE5 {
         component "GP0 (UART TX)" as PA_TX #A7F3D0
         component "GP4 (I2C SDA)" as PA_SDA #A7F3D0
         component "GP5 (I2C SCL)" as PA_SCL #A7F3D0
     }
 
-    package "Pico Victim B (UART Listener / I2C Slave)" as PKG_PICO_B #D1FAE5 {
+    package "Pico Victim B on Maker Pi Base\n(UART Listener / I2C Slave)" as PKG_PICO_B #D1FAE5 {
         component "GP1 (UART RX)" as PB_RX #A7F3D0
         component "GP4 (I2C SDA)" as PB_SDA #A7F3D0
         component "GP5 (I2C SCL)" as PB_SCL #A7F3D0
