@@ -44,7 +44,7 @@ The frozen design package names these "Node 1/2/3" and "victim A/B": whattheflip
 | Cut | Why |
 |---|---|
 | SPI sniffing | the only SPI host is the microSD, and it would eat all four probes. RMT ram also overflows in 4.8 µs at 10 MHz |
-| BLE | no promiscuous api, the 37 hopping channels are not interceptable, and NimBLE eats 45 KB SRAM |
+| BLE | no promiscuous api, and the hopping data channels are not interceptable |
 | OLED | the web dashboard replaces it |
 | level shifters | everything is 3.3 V already |
 
@@ -119,7 +119,7 @@ wireless sniffer:
 - A0: µT-Kernel with the freertos shim against the closed source wi-fi blobs is still unproven. If it fails, wireless drops to plain FreeRTOS, which is an A-. Gate: a 30 min promiscuous capture with no panic. Tan, Zayne.
 - A4: microSD erase stalls up to 40 ms against a 32 KB pool. Ryan.
 - A5: discovery can false-lock on bus noise. It needs 16 consecutive valid edge rhythms before `FLG_PROTO_LOCKED`. Tan.
-- A6: `esp_wifi_80211_tx` may filter our deauth. If it does, wireless stress falls back to 802.15.4 injection. Zayne, Annie.
+- A6: the IDF documents no deauth support in `esp_wifi_80211_tx` (beacon, probe, action and non-QoS data only), so expect the driver to filter it. 802.15.4 injection is the plan for wireless stress. Zayne, Annie.
 - A7: the strapping pins among our GPIOs (GPIO4, GPIO5 on the probes, GPIO9 on the e-stop) must idle at boot. Tan, Joseph.
 - A8: the C6 has 4 RMT channels but only 2 support RX, so all four probes cannot be edge-captured by RMT at the same time. Options: run 2 probes on RMT RX and time-share, or move the rest onto a different capture path. Resolved at the week 10 check-in. Tan.
 

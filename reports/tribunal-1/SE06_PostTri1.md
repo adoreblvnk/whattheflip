@@ -36,7 +36,7 @@ Audit of version A (`SE06_PreTri1.md`) and version B (`SE06_ImmTri1.md`) against
 ## What this changes going forward
 
 1. All code uses `tk_get_mpf` with `TMO_POL`; grep for `tk_tget_mpf` in future reviews must return nothing.
-2. Gap A8 blocks discovery firmware until Tan picks the capture path for probes 3 and 4 or the time-share duty cycle. FR1 stays a "what" requirement; the "how" is now a design decision, decided by week 10.
+2. Gap A8 blocks discovery firmware until Tan picks the capture path for probes 3 and 4 or the time-share duty cycle. FR-1 stays a "what" requirement; the "how" is now a design decision, decided by week 10.
 3. A6 is escalated as recorded in `whattheflip.md`.
 4. The buzzer EXIO2-or-EXIO3 bench check remains the one open hardware check.
 
