@@ -13,7 +13,8 @@ whattheflip is a Waveshare ESP32-C6 module on a Cytron Maker Pi Base. Four probe
 
 hestia transmits UART on GP0.
 daphne listens on GP1 (uart rx) and polls the GY-511 as i2c master at 400 kHz on GP4/GP5. The sensor is wired to daphne's rows only.
-Both sit on one breadboard. The four probes plug into breadboard tie rows, sharing 3.3 V and ground.
+hestia and daphne sit on Cytron Maker Pi Base carriers (reset buttons, per-pin leds), jumpered to the shared breadboard with the GY-511.
+The four probes plug into breadboard tie rows, sharing 3.3 V and ground.
 
 | Probe | Plugs into | Wire |
 |---|---|---|
