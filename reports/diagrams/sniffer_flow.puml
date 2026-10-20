@@ -1,0 +1,25 @@
+@startuml sniffer_flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam shadowing false
+
+start
+:pick the channel (wi-fi 1-13 or 802.15.4 11-26);
+:radio goes promiscuous;
+:the baseband hands raw frames to the isr;
+:copy each frame into the pool;
+
+while (capture running?) is (yes)
+  if (pool above 85 percent?) then (yes)
+    :drop beacons first, keep management frames;
+    :count every drop for the dashboard;
+  else (no)
+    :write pcap to microSD, push numbers to the dashboard;
+  endif
+endwhile (stop or estop)
+
+:flush the last buffers, close the pcap, back to idle;
+stop
+@enduml

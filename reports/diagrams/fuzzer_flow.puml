@@ -1,0 +1,26 @@
+@startuml fuzzer_flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam shadowing false
+
+start
+:pick the bus and the fault;
+:arm the trigger;
+
+if (fault on uart?) then (yes)
+  :wait for a frame edge on probe 0;
+  :drive one bit period low, max 10 us;
+else (i2c)
+  :wait for the ack slot on probe 2;
+  :hold sda high for max 50 us, or stretch scl;
+endif
+
+if (a probe still driven after 100 us?) then (stuck)
+  :float all probes, raise contention;
+else (clean)
+  :log the error count, disarm;
+endif
+stop
+@enduml

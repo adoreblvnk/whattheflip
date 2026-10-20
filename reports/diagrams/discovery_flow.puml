@@ -1,0 +1,30 @@
+@startuml discovery_flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam shadowing false
+
+start
+:listen on the probes, all pins high-Z;
+:RMT RX catches every edge, dma into a ring buffer;
+:cluster the edge timing into pulse widths;
+
+if (rhythm matches uart?) then (yes)
+  :smallest pulse width is one bit;
+  :baud lands in 9600 to 115200, within 2 percent;
+elseif (rhythm matches i2c?) then (yes)
+  :find start and stop pairs in the stream;
+  :clock runs at 100 or 400 kHz;
+else (still unclear)
+  :keep listening;
+  stop
+endif
+
+if (locked within 2 s?) then (yes)
+  :map the pins, tell the dashboard;
+else (no)
+  :tell the dashboard, retry up to 3 times;
+endif
+stop
+@enduml

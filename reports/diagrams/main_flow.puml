@@ -1,0 +1,36 @@
+@startuml main_flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam ActivityBorderColor #1E293B
+skinparam ActivityBackgroundColor #F8FAFC
+skinparam ActivityDiamondBackgroundColor #FEF9C3
+skinparam ArrowColor #1E293B
+
+start
+:power on, keep e-stop unpressed;
+:microSD mount, radio up, all probes high-Z;
+if (microSD or radio failed?) then (yes)
+  :blink red, stop here;
+  stop
+else (no)
+endif
+
+while (running clean?) is (yes)
+  :idle, probes high-Z;
+  if (command from dashboard?) then (sniff)
+    :capture frames, write pcap to microSD, stream numbers;
+  elseif (command from dashboard?) then (discover)
+    :sample bus edges, classify uart or i2c, map pins;
+  elseif (command from dashboard?) then (fuzz)
+    :arm trigger, inject one bounded glitch, watch error count;
+  else (none)
+  endif
+endwhile (estop pressed or a probe stuck low over 100 us)
+:float probes in 200 ns, red led, buzzer;
+:wait for user reset;
+-> idle
+stop
+@enduml
