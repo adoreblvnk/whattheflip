@@ -9,6 +9,8 @@ build/
 *.uf2
 *.elf
 *.bin
+sdkconfig
+sdkconfig.old
 
 # Editor
 .vscode/
