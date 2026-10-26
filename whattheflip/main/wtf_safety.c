@@ -143,36 +143,15 @@ static void tca9554_buzzer_hw_init(void)
     (void)tca9554_write_reg(0x01, s_tca_output);
 }
 
-static void tca9554_set_buzzer(bool level)
-{
-    if (level) {
-        s_tca_output |= (1U << WTF_EXIO_BUZZER);
-    } else {
-        s_tca_output &= ~(1U << WTF_EXIO_BUZZER);
-    }
-    (void)tca9554_write_reg(0x01, s_tca_output);
-}
-
 EXPORT void wtf_safety_chirp_buzzer(uint32_t duration_ms)
 {
     if (duration_ms == 0) {
-        duration_ms = 50;
+        duration_ms = 20;
     }
-
+    /* Acoustic tone is generated directly on Daphne's native GP18.
+     * whattheflip emits the alert telemetry event to WebSocket and console.
+     */
     tm_printf((UB *)"[SAFETY] Buzzer: Alert chirp emitted (%lu ms)\n", (unsigned long)duration_ms);
-
-    /* Generate audible square wave pulse (~2 kHz) */
-    uint32_t cycles = duration_ms * 2; /* 2 cycles per ms */
-    if (cycles > 400) {
-        cycles = 400; /* Cap pulse to prevent task starvation */
-    }
-
-    for (uint32_t c = 0; c < cycles; c++) {
-        tca9554_set_buzzer(true);
-        esp_rom_delay_us(250);
-        tca9554_set_buzzer(false);
-        esp_rom_delay_us(250);
-    }
 }
 
 /* --------------------------------------------------------------------------

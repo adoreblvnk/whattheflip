@@ -10,8 +10,8 @@
 |---|---|---|---|---|
 | **UART0 RX** | Processor 1 (`TP_PRC1`, Core 0) | GP1 (Row 12) | 115200 baud, 8N1 | Receives telemetry packets from Hestia, validates framing/checksum (`~counter`), tracks Bit Error Rate (BER), and detects 0xAA/0x55 stress bursts. |
 | **I2C Master** | Processor 2 (`TP_PRC2`, Core 1) | GP6 SDA (Row 43)<br>GP7 SCL (Row 42) | 400 kHz Fast-Mode (`I2C1`) | Polls GY-511 accelerometer and magnetometer with 8-sample moving average. Features automatic 9-clock bus recovery on faults/aborts. |
+| **Physical Indicators** | Processors 1 & 2 | GP2 (I2C Fault LED)<br>GP3 (UART Fault LED)<br>GP18 (Piezo Buzzer) | SIO Direct Drive | GP2 blue LED lights during I2C recovery; GP3 blue LED lights on corrupt UART frame; GP18 emits 2 kHz acoustic chirp on faults and startup. |
 | **USB CDC Console** | Processor 1 (Core 0) | USB (Micro-USB) | 115200 baud CDC ACM | Streams system logs via `tm_printf` under SMP-safe console lock. Supports software reboot into BOOTSEL on 1200 baud or `B` command. |
-
 ---
 
 ## Pin Mapping & Bench Findings

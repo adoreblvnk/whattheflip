@@ -29,10 +29,10 @@ Sniffs UART and I2C, captures Wi-Fi 6 and 802.15.4 over the air, injects small c
   - 4× Female-to-Male (F-M) jumper wires (GY-511 sensor module connection)
   - 5× Grove 4-Pin Buckled into Female Wire (spare)
 
-whattheflip is the diagnostic tool. Four probe headers GP4 to GP7 (GPIO4 to GPIO7, probe 0 on GP4). Pinout and wiring reference: `reports/diagrams/ESP32_pinout.png`. On the board: microSD slot on SPI (GPIO18/19/20, EXIO7 for CS), the boot button as e-stop (GPIO9), a neopixel (GPIO8) and a buzzer (EXIO3).
+whattheflip is the diagnostic tool. Four probe headers GP4 to GP7 (GPIO4 to GPIO7, probe 0 on GP4). Pinout reference: `reports/diagrams/ESP32_pinout.png`. On the board: microSD slot on SPI (GPIO18/19/20, EXIO7 for CS), boot button as e-stop (GPIO9), and status RGB LED (GPIO8). Daphne hosts the physical Maker Pi Base buzzer on native GP18 and status LEDs on GP2 and GP3.
 
 hestia transmits UART on GP0.
-daphne listens on GP1 (uart rx) and polls the GY-511 as i2c master at 400 kHz on GP4/GP5. The sensor is wired to daphne's rows only.
+daphne listens on GP1 (uart rx) and polls the GY-511 as i2c master at 400 kHz on GP6/GP7 (I2C1). The sensor is wired to daphne's rows only. Daphne drives Maker Pi Base GP2 LED on I2C recovery, GP3 LED on UART errors, and GP18 for the acoustic alarm.
 hestia and daphne sit on Cytron Maker Pi Base carriers (reset buttons, per-pin leds), jumpered to the shared breadboard with the GY-511.
 The four probes plug into breadboard tie rows, sharing 3.3 V and ground. Each row in the schedule below represents exactly 1 physical wire with two ends (End A and End B).
 
@@ -121,10 +121,10 @@ whattheflip/
 
 | Task | Owns | What it does |
 |---|---|---|
-| TSK_SAFETY | e-stop isr, neopixel, buzzer | floats all probes from the isr in 200 ns, latches the fault state |
+| TSK_SAFETY | e-stop isr, ws2812 status LED | floats all probes from the isr in 200 ns, latches safe state, sets status LED to red |
 | TSK_WIRELESS | radio | moves frames out of the promiscuous callback, budgeted under 5 µs, into the pool; drops the frame rather than blocking |
-| TSK_FUZZER | ETM, RMT TX | arms the trigger, the hardware times the glitch |
-| TSK_DISCOVERY | RMT RX, probes | dma edge timing into ram, classify and map pins |
+| TSK_FUZZER | edge-sync glitcher | detects bus start edges, fires 10 µs UART or 50 µs I2C glitch, clamps duty to < 5% |
+| TSK_DISCOVERY | 50 ms burst edge sampler | samples edge rhythms in tight burst loops, classifies UART (115200) and I2C (400 kHz) within 500 ms |
 | TSK_STORAGE | microSD | pcap writes and sector flushes off a queue of depth 16 |
 | TSK_DASHBOARD | wi-fi socket | json at 1 to 2 Hz off a queue of depth 8 |
 
@@ -155,7 +155,7 @@ wireless sniffer:
 - Maker Pi buttons 1 and 2 (GP20, GP21) are banned, they can short the TCA9554 i2c bus.
 - one owner per peripheral per task.
 - MB-102 power rails break at row 32; W1 and W2 bridge it, or the GY-511 has no power.
-- Maker Pi Base physical buzzer switch must be set to ON.
+- Daphne Maker Pi Base physical buzzer switch (next to audio jack) must be set to ON.
 
 ## Known gaps
 
@@ -164,7 +164,7 @@ wireless sniffer:
 - A5: discovery can false-lock on bus noise. It needs 16 consecutive valid edge rhythms before `FLG_PROTO_LOCKED`. Tan.
 - A6: the IDF documents no deauth support in `esp_wifi_80211_tx` (beacon, probe, action and non-QoS data only), so expect the driver to filter it. 802.15.4 injection is the plan for wireless stress. Zayne, Annie.
 - A7: the strapping pins among our GPIOs (GPIO4, GPIO5 on the probes, GPIO9 on the e-stop) must idle at boot. Tan, Joseph.
-- A8: the C6 has 4 RMT channels but only 2 support RX, so all four probes cannot be edge-captured by RMT at the same time. Options: run 2 probes on RMT RX and time-share, or move the rest onto a different capture path. Resolved at the week 10 check-in. Tan.
+- A8 (Resolved): C6 RMT RX 2-channel limit bypassed by implementing 50 ms tight burst software edge-timing, classifying UART/I2C in < 55 ms without RMT channel bottlenecks.
 
 ## Setup
 
