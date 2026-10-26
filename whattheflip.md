@@ -169,3 +169,72 @@ wireless sniffer:
 ## Setup
 
 `./setup.sh` or `./setup.sh --skip-esp-idf`. Reference repos land in `third_party`, which is gitignored. The capture card is a Delkin USDCOEM-32GB (formatted FAT32, 32 KB cluster); cheaper cards spike past the 40 ms stall budget.
+
+
+---
+
+ - iris (whattheflip/iris/ — Wireless Victim on bare ESP32-C6)
+   - SoftAP Beacon Broadcast:
+     - Isolated SoftAP on Wi-Fi Channel 6 with fixed BSSID 02:00:00:00:00:03 (FR-6
+       target).
+     - Periodic beacon and non-QoS data bursts to serve as promiscuous sniffer target.
+   - 802.15.4 Transmitter:
+     - Raw IEEE 802.15.4 packet burst generator on Channel 15 using esp_ieee802154
+       driver.
+     - Configurable transmission power and interval (100 ms to 1 s).
+   - Build & Flash Pipeline:
+     - CMakeLists.txt, Makefile, and README.md targeting bare ESP32-C6 board.
+ - whattheflip (whattheflip/whattheflip/ — Main Diagnostic Tool on ESP32-C6)
+   - TSK_WIRELESS (FR-4, TC-2.1, TC-2.2):
+     - Wi-Fi 6 promiscuous sniffer across Channels 1–13 with RSSI and microsecond
+       timestamps.
+     - IEEE 802.15.4 promiscuous frame sniffer across Channels 11–26 (esp_ieee802154).
+     - Promiscuous RX callback budget enforcement: copy into MPF_PACKETS under 5 μs with
+       zero allocation.
+     - Radio time-slicing state machine: 1–2 s sniffer window on target channels,
+       alternating with Channel 6 SoftAP dashboard hosting.
+   - TSK_STORAGE (FR-8, TC-4.2):
+     - FatFS FAT32 filesystem mounting on Delkin USDCOEM-32GB card over bitbang SPI.
+     - Direct PCAP file write (.pcap) and periodic sector flush off MBF_STORAGE (depth
+       16).
+     - Erase-stall mitigation for card latency spikes up to 40 ms against the 32 KB
+       packet pool (Gap A4).
+   - TSK_FUZZER (FR-5, FR-6, TC-3.2, TC-3.3):
+     - I2C clock-stretch injection on Probe 3 (GPIO7): drive SCL LOW for 50 μs during
+       clock cycle.
+     - Targeted wireless frame injection (802.15.4 frame stress strictly directed to
+       Iris BSSID, never broadcast).
+   - TSK_DISCOVERY (FR-3, TC-1.3):
+     - Dynamic decoder remapping engine: remap any physical probe to any decoder in < 10
+       ms without hardware rewiring.
+     - Multi-probe RMT RX channel time-sharing (handling the 2-channel RMT RX hardware
+       limit, Gap A8).
+   - TSK_SAFETY Enhancements:
+     - Onboard Neopixel (WS2812 on GPIO8) status indicators (Green: Armed, Blue:
+       Sniffing, Yellow: Fuzzing, Red: Aborted).
+     - Physical piezo buzzer pulse on E-stop abort event.
+   - TSK_DASHBOARD (Interactive UI Controls):
+     - WebSocket handler for user-initiated single-glitch injections from the browser.
+     - Live PCAP capture download link over HTTP (GET /capture.pcap).
+ - daphne (whattheflip/daphne/ — Victim B on RP2040)
+   - Fault Recovery & Bus Resilience:
+     - I2C bus recovery routine (clock generation sequence to free stuck slave lines
+       after ACK kill).
+     - Moving average variance tracking (detecting sensor drift or glitch impact).
+   - Glitched UART Statistics Reporting:
+     - Bit-error rate (BER) tracker calculating corrupted bits per packet during active
+       injection.
+ - hestia (whattheflip/hestia/ — Victim A on RP2040)
+   - Transmission Agility:
+     - Support runtime rate adjustment (1 Hz, 2 Hz, 5 Hz, 10 Hz) via UART commands.
+     - Pattern injection test modes (alternating bit patterns 0xAA/0x55 for probe
+       verification).
+ - shared (whattheflip/shared/)
+   - Canonical Protocol Headers:
+     - Shared packet_types.h header unifying UART and I2C frame struct layouts across
+       both RP2040 and ESP32-C6 builds.
+     - Shared checksum and CRC16 algorithms.
+ - Verification & Test Automation (V-Model / Traceability):
+   - Python bench test scripts executing formal Test Cases TC-1.1 through TC-5.2 to
+     generate the required 5-column Traceability Matrix for the Week 10 / Week 13
+     tribunals.

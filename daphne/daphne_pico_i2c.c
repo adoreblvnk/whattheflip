@@ -203,3 +203,54 @@ uint32_t daphne_hw_i2c_get_abrt_source(void)
 {
     return s_active_i2c->tx_abrt_source;
 }
+
+void daphne_hw_i2c_bus_recovery(uint8_t bus_num)
+{
+    int sda_pin = (bus_num == 1) ? 6 : 4;
+    int scl_pin = (bus_num == 1) ? 7 : 5;
+
+    /* 1. Disable hardware I2C controller */
+    s_active_i2c->enable = 0;
+
+    /* 2. Configure pins as SIO GPIOs with pull-ups */
+    pads_bank0_hw->io[sda_pin] = PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_PUE_BITS;
+    pads_bank0_hw->io[scl_pin] = PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_PUE_BITS;
+    io_bank0_hw->io[sda_pin].ctrl = 5; /* GPIO_FUNC_SIO */
+    io_bank0_hw->io[scl_pin].ctrl = 5; /* GPIO_FUNC_SIO */
+
+    /* Set SCL as output HIGH, SDA as input (pulled high) */
+    sio_hw->gpio_oe_clr = (1 << sda_pin);
+    sio_hw->gpio_oe_set = (1 << scl_pin);
+    sio_hw->gpio_set = (1 << scl_pin);
+
+    /* 5 us delay loop (~625 cycles @ 125 MHz) */
+    #define I2C_REC_DELAY() do { for (volatile int _d = 0; _d < 600; _d++) {} } while (0)
+
+    I2C_REC_DELAY();
+
+    /* 3. 9-Clock pulse sequence on SCL to release stuck slave */
+    for (int clk = 0; clk < 9; clk++) {
+        sio_hw->gpio_clr = (1 << scl_pin); /* SCL LOW */
+        I2C_REC_DELAY();
+        sio_hw->gpio_set = (1 << scl_pin); /* SCL HIGH */
+        I2C_REC_DELAY();
+    }
+
+    /* 4. Generate STOP condition:
+     * Bring SCL LOW, pull SDA LOW, bring SCL HIGH, then release SDA HIGH
+     */
+    sio_hw->gpio_clr = (1 << scl_pin); /* SCL LOW */
+    I2C_REC_DELAY();
+    sio_hw->gpio_clr = (1 << sda_pin);
+    sio_hw->gpio_oe_set = (1 << sda_pin); /* Drive SDA LOW */
+    I2C_REC_DELAY();
+    sio_hw->gpio_set = (1 << scl_pin); /* SCL HIGH */
+    I2C_REC_DELAY();
+    sio_hw->gpio_oe_clr = (1 << sda_pin); /* Release SDA (floats HIGH via pull-up = STOP) */
+    I2C_REC_DELAY();
+
+    #undef I2C_REC_DELAY
+
+    /* 5. Re-initialize hardware I2C controller at 400 kHz Fast-Mode */
+    daphne_hw_i2c_init(bus_num, 400000);
+}

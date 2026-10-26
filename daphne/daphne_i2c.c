@@ -16,6 +16,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#if __has_include("packet_types.h")
+#include "packet_types.h"
+#elif __has_include("../shared/packet_types.h")
+#include "../shared/packet_types.h"
+#elif __has_include("../../shared/packet_types.h")
+#include "../../shared/packet_types.h"
+#endif
 /* Sensor Addresses */
 #define LSM303_ACCEL_ADDR       0x19
 #define LSM303_MAG_ADDR         0x1E
@@ -30,6 +37,34 @@
 #define LSM303_CRB_REG_M        0x01
 #define LSM303_MR_REG_M         0x02
 #define LSM303_OUT_X_H_M        0x03
+
+LOCAL uint32_t s_i2c_recovery_count = 0;
+
+EXPORT void daphne_i2c_bus_recovery(uint8_t bus)
+{
+    s_i2c_recovery_count++;
+    tm_printf((UB *)"[DAPHNE:I2C] Bus fault detected! Executing 9-clock recovery on I2C%d (recovery #%u)...\n",
+              (unsigned)bus, (unsigned)s_i2c_recovery_count);
+
+    /* 1. Low-level 9-clock SCL toggle and STOP condition */
+    daphne_hw_i2c_bus_recovery(bus);
+
+    /* 2. Re-configure sensor control registers in case sensor was wedged */
+    uint8_t cfg_a1[2] = {LSM303_CTRL_REG1_A, 0x77};
+    uint8_t cfg_a4[2] = {LSM303_CTRL_REG4_A, 0x08};
+    (void)daphne_hw_i2c_write(LSM303_ACCEL_ADDR, cfg_a1, 2, false);
+    (void)daphne_hw_i2c_write(LSM303_ACCEL_ADDR, cfg_a4, 2, false);
+
+    uint8_t cfg_m_cra[2] = {LSM303_CRA_REG_M, 0x14};
+    uint8_t cfg_m_crb[2] = {LSM303_CRB_REG_M, 0x20};
+    uint8_t cfg_m_mr[2]  = {LSM303_MR_REG_M,  0x00};
+    (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_cra, 2, false);
+    (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_crb, 2, false);
+    (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_mr, 2, false);
+
+    tm_printf((UB *)"[DAPHNE:I2C] 9-clock recovery complete on I2C%d: STOP sent, bus clear\n",
+              (unsigned)bus);
+}
 
 /* Filter Window */
 #define FILTER_SIZE             8
@@ -228,11 +263,13 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
                 i2c_fault_count++;
                 tm_printf((UB *)"[DAPHNE:I2C] FAULT: Mag read failed (err=%d, abrt=0x%04X, faults=%u)\n",
                           mret, daphne_hw_i2c_get_abrt_source(), i2c_fault_count);
+                daphne_i2c_bus_recovery(active_bus);
             }
         } else {
             i2c_fault_count++;
             tm_printf((UB *)"[DAPHNE:I2C] FAULT: Accel read failed (err=%d, abrt=0x%04X, faults=%u)\n",
                       ret, daphne_hw_i2c_get_abrt_source(), i2c_fault_count);
+            daphne_i2c_bus_recovery(active_bus);
         }
 
         /* 200 ms sample period (5 Hz logging rate) */

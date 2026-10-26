@@ -14,11 +14,11 @@ PICO_SDK_DIR := ../../pico-sdk
 
 all: daphne.uf2
 
-daphne.uf2: daphne_main.c daphne_uart.c daphne_uart.h daphne_i2c.c daphne_i2c.h daphne_pico_i2c.c daphne_pico_i2c.h
+daphne.uf2: daphne_main.c daphne_uart.c daphne_uart.h daphne_i2c.c daphne_i2c.h daphne_pico_i2c.c daphne_pico_i2c.h ../shared/packet_types.h
 	@echo "==> Staging Daphne application files into $(APP_DIR)"
 	@mkdir -p $(APP_DIR)
 	@rm -f $(APP_DIR)/*.c $(APP_DIR)/*.h
-	@cp daphne_main.c daphne_uart.c daphne_uart.h daphne_i2c.c daphne_i2c.h daphne_pico_i2c.c daphne_pico_i2c.h $(APP_DIR)/
+	@cp daphne_main.c daphne_uart.c daphne_uart.h daphne_i2c.c daphne_i2c.h daphne_pico_i2c.c daphne_pico_i2c.h ../shared/packet_types.h $(APP_DIR)/
 	@echo "==> Building µT-Kernel 3.0 SMP for RP2040 (CONSOLE=usb_cdc)..."
 	$(MAKE) -C $(BUILD_DIR) SMP=1 CONSOLE=usb_cdc PICO_SDK_PATH=$(PICO_SDK_DIR)
 	@cp $(BUILD_DIR)/mtk3pico_smp1_usb_cdc.uf2 ./daphne.uf2

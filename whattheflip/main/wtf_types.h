@@ -22,6 +22,31 @@
 #define WTF_PIN_ESTOP           9   /* Boot button: Hardware E-Stop (Active LOW) */
 #define WTF_PIN_NEOPIXEL        8   /* Onboard WS2812 RGB LED */
 
+/* TCA9554PWR I2C Expander Pins (for Buzzer EXIO3 on Maker Pi Base) */
+#define WTF_PIN_TCA9554_SDA     22
+#define WTF_PIN_TCA9554_SCL     23
+#define WTF_EXIO_BUZZER         3
+#define WTF_EXIO_SD_CS          7
+
+/* Safety Status States */
+typedef enum {
+    WTF_STATE_ARMED       = 0,  /* Green: Armed / Sniffing */
+    WTF_STATE_INJECTING   = 1,  /* Yellow: Fault Injecting */
+    WTF_STATE_ABORTED     = 2   /* Red: E-Stop Aborted */
+} wtf_safety_state_t;
+
+/* Decoder Remap Identifiers (FR-3, TC-1.3) */
+#define WTF_DECODER_NONE            0
+#define WTF_DECODER_UART1_RX        1   /* Remap to UART1 RX input signal */
+#define WTF_DECODER_TIMER_CAPTURE   2   /* Remap to Timer / MCPWM capture signal */
+#define WTF_DECODER_RMT_RX0         3   /* Remap to RMT RX channel 0 */
+#define WTF_DECODER_RMT_RX1         4   /* Remap to RMT RX channel 1 */
+
+/* Fault Mode Identifiers (FR-5, TC-3.1, TC-3.2) */
+#define WTF_FAULT_NONE              0
+#define WTF_FAULT_UART_BIT_FLIP     1
+#define WTF_FAULT_I2C_ACK_KILL      2
+#define WTF_FAULT_I2C_CLOCK_STRETCH 3
 /* MicroSD Bitbang SPI Pins (Maker Pi Base GP15 jumpered to GP13 -> GPIO21) */
 #define WTF_PIN_SD_SCK          18
 #define WTF_PIN_SD_MOSI         19

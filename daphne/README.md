@@ -8,8 +8,8 @@
 
 | Subsystem | Core Binding (`TA_ASSPRC`) | Pins | Parameters | Role |
 |---|---|---|---|---|
-| **UART0 RX** | Processor 1 (`TP_PRC1`, Core 0) | GP1 (Row 12) | 115200 baud, 8N1 | Receives telemetry packets from Hestia (`HESTIA:<counter>:<checksum>`), validates framing and checksum (`~counter`). |
-| **I2C Master** | Processor 2 (`TP_PRC2`, Core 1) | GP6 SDA (Row 43)<br>GP7 SCL (Row 42) | 400 kHz Fast-Mode (`I2C1`) | Polls GY-511 (LSM303DLHC) accelerometer (`0x19`) and magnetometer (`0x1E`) with 8-sample moving average filter. Auto-detects GP6/7 vs GP4/5. |
+| **UART0 RX** | Processor 1 (`TP_PRC1`, Core 0) | GP1 (Row 12) | 115200 baud, 8N1 | Receives telemetry packets from Hestia, validates framing/checksum (`~counter`), tracks Bit Error Rate (BER), and detects 0xAA/0x55 stress bursts. |
+| **I2C Master** | Processor 2 (`TP_PRC2`, Core 1) | GP6 SDA (Row 43)<br>GP7 SCL (Row 42) | 400 kHz Fast-Mode (`I2C1`) | Polls GY-511 accelerometer and magnetometer with 8-sample moving average. Features automatic 9-clock bus recovery on faults/aborts. |
 | **USB CDC Console** | Processor 1 (Core 0) | USB (Micro-USB) | 115200 baud CDC ACM | Streams system logs via `tm_printf` under SMP-safe console lock. Supports software reboot into BOOTSEL on 1200 baud or `B` command. |
 
 ---
@@ -34,6 +34,27 @@
 - `CRB_REG_M` (`0x01`): `0x20` (±1.3 Gauss gain).
 - `MR_REG_M` (`0x02`): `0x00` (Continuous conversion mode).
 - Burst reads starting at `OUT_X_H_M` (`0x03`).
+
+---
+
+## Fault Recovery & Resilience
+
+### 1. 9-Clock I2C Bus Recovery (`daphne_i2c_bus_recovery`)
+When a hardware fault, ACK-kill glitch, or transaction abort wedges a slave device holding SDA LOW:
+1. The hardware I2C controller is disabled and pins are switched to SIO GPIO mode with pull-ups.
+2. SCL is pulsed through **9 full clock cycles** (5 µs LOW, 5 µs HIGH) to allow the slave's internal shift register to release SDA.
+3. A standard I2C **STOP condition** is generated: SDA driven LOW, SCL brought HIGH, SDA released HIGH.
+4. The hardware I2C peripheral is re-initialized at 400 kHz Fast-Mode and sensor registers are restored.
+
+### 2. UART Bit Error Rate (BER) Tracking
+During active fuzzing (Probe 0 10 µs UART glitch injection):
+- Every received frame is parsed against the canonical sequence.
+- If checksum verification fails or framing corruption occurs, Daphne computes the byte-wise **Hamming distance** (bit differences) between the corrupted buffer and the expected format.
+- Logs real-time metrics:
+```text
+[DAPHNE:BER] ERR_BITS=3 | CUMULATIVE: 12/864 bits | BER=1.38% | FRAMES: val=28 cor=2
+```
+- Detects alternating `0xAA` and `0x55` stress test bursts emitted during probe characterization.
 
 ---
 

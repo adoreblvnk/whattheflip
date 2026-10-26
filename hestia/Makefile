@@ -14,11 +14,11 @@ PICO_SDK_DIR := ../../pico-sdk
 
 all: hestia.uf2
 
-hestia.uf2: hestia_main.c hestia_uart.c hestia_uart.h
+hestia.uf2: hestia_main.c hestia_uart.c hestia_uart.h ../shared/packet_types.h
 	@echo "==> Staging Hestia application files into $(APP_DIR)"
 	@mkdir -p $(APP_DIR)
 	@rm -f $(APP_DIR)/*.c $(APP_DIR)/*.h
-	@cp hestia_main.c hestia_uart.c hestia_uart.h $(APP_DIR)/
+	@cp hestia_main.c hestia_uart.c hestia_uart.h ../shared/packet_types.h $(APP_DIR)/
 	@echo "==> Building µT-Kernel 3.0 SMP for RP2040 (CONSOLE=usb_cdc)..."
 	$(MAKE) -C $(BUILD_DIR) SMP=1 CONSOLE=usb_cdc PICO_SDK_PATH=$(PICO_SDK_DIR)
 	@cp $(BUILD_DIR)/mtk3pico_smp1_usb_cdc.uf2 ./hestia.uf2
