@@ -43,9 +43,11 @@ LOCAL uint32_t s_i2c_recovery_count = 0;
 EXPORT void daphne_i2c_bus_recovery(uint8_t bus)
 {
     s_i2c_recovery_count++;
+    /* Turn ON physical GP2 blue LED on Maker Pi Base during fault/recovery */
+    daphne_hw_gpio_set(2, true);
+    daphne_hw_buzzer_beep(30); /* Audible 2 kHz chirp on I2C fault */
     tm_printf((UB *)"[DAPHNE:I2C] Bus fault detected! Executing 9-clock recovery on I2C%d (recovery #%u)...\n",
               (unsigned)bus, (unsigned)s_i2c_recovery_count);
-
     /* 1. Low-level 9-clock SCL toggle and STOP condition */
     daphne_hw_i2c_bus_recovery(bus);
 
@@ -144,6 +146,13 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
     (void)exinf;
 
     filter_init(&s_accel_filt);
+    /* Configure GP2 as physical I2C fault indicator LED, GP18 as buzzer */
+    daphne_hw_gpio_init_out(2);
+    daphne_hw_gpio_init_out(18);
+    /* Test beep & LED flash on boot to prove hardware works */
+    daphne_hw_gpio_set(2, true);
+    daphne_hw_buzzer_beep(80);
+    daphne_hw_gpio_set(2, false);
 
     /* 1. Universal GPIO scan (GP2..GP28) with NO pullup/pulldown to find any pulled-up line */
     uint32_t raw_pins = daphne_hw_scan_all_pins_raw();
@@ -255,10 +264,10 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
                 int16_t mag_z = (int16_t)(((uint16_t)raw_buf[2] << 8) | raw_buf[3]);
                 int16_t mag_y = (int16_t)(((uint16_t)raw_buf[4] << 8) | raw_buf[5]);
 
-                if ((poll_count % 5) == 0 || poll_count <= 3) {
-                    tm_printf((UB *)"[DAPHNE:I2C] ACCEL mg: X=%d Y=%d Z=%d (avg: X=%d Y=%d Z=%d) | MAG: X=%d Y=%d Z=%d\n",
-                              raw_x, raw_y, raw_z, avg_x, avg_y, avg_z, mag_x, mag_y, mag_z);
-                }
+                /* Log every poll (5 Hz) for instantaneous dashboard responsiveness */
+                daphne_hw_gpio_set(2, false); /* Clear fault LED on success */
+                tm_printf((UB *)"[DAPHNE:I2C] ACCEL mg: X=%d Y=%d Z=%d (avg: X=%d Y=%d Z=%d) | MAG: X=%d Y=%d Z=%d\n",
+                          raw_x, raw_y, raw_z, avg_x, avg_y, avg_z, mag_x, mag_y, mag_z);
             } else {
                 i2c_fault_count++;
                 tm_printf((UB *)"[DAPHNE:I2C] FAULT: Mag read failed (err=%d, abrt=0x%04X, faults=%u)\n",

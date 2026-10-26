@@ -13,6 +13,7 @@
 #include "esp_cpu.h"
 #include "esp_rom_sys.h"
 #include "esp_rom_serial_output.h"
+#include "wtf_fuzzer.h"
 
 static volatile bool s_safety_latched = false;
 static wtf_safety_state_t s_safety_state = WTF_STATE_ARMED;
@@ -346,6 +347,12 @@ EXPORT void wtf_safety_task(INT stacd, void *exinf)
         if (esp_rom_output_rx_one_char(&rx_char) == 0) {
             if (rx_char == 'E' || rx_char == 'e') {
                 wtf_safety_abort();
+            } else if (rx_char == 'U' || rx_char == 'u') {
+                wtf_fuzzer_inject_uart();
+            } else if (rx_char == 'A' || rx_char == 'a') {
+                wtf_fuzzer_inject_i2c_ack();
+            } else if (rx_char == 'S' || rx_char == 's') {
+                wtf_fuzzer_inject_i2c_stretch();
             }
         }
 

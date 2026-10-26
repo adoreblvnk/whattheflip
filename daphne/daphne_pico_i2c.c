@@ -254,3 +254,31 @@ void daphne_hw_i2c_bus_recovery(uint8_t bus_num)
     /* 5. Re-initialize hardware I2C controller at 400 kHz Fast-Mode */
     daphne_hw_i2c_init(bus_num, 400000);
 }
+
+void daphne_hw_gpio_init_out(uint32_t pin)
+{
+    io_bank0_hw->io[pin].ctrl = 5; /* Function 5: SIO */
+    pads_bank0_hw->io[pin] = PADS_BANK0_GPIO0_IE_BITS; /* Enable pad, clear OD */
+    sio_hw->gpio_oe_set = (1U << pin);
+    sio_hw->gpio_clr = (1U << pin);
+}
+
+void daphne_hw_gpio_set(uint32_t pin, bool level)
+{
+    if (level) {
+        sio_hw->gpio_set = (1U << pin);
+    } else {
+        sio_hw->gpio_clr = (1U << pin);
+    }
+}
+
+void daphne_hw_buzzer_beep(uint32_t duration_ms)
+{
+    uint32_t cycles = duration_ms * 2;
+    for (uint32_t c = 0; c < cycles; c++) {
+        sio_hw->gpio_set = (1U << 18);
+        for (volatile int i = 0; i < 2500; i++) {}
+        sio_hw->gpio_clr = (1U << 18);
+        for (volatile int i = 0; i < 2500; i++) {}
+    }
+}

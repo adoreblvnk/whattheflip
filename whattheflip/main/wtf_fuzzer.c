@@ -85,10 +85,17 @@ EXPORT void wtf_fuzzer_inject_uart(void)
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
+    /* Synchronize to Start Bit on Probe 1 (GPIO5) */
+    uint32_t t_wait = 0;
+    while (((GPIO.in.val >> WTF_PIN_PROBE1_SNIFF) & 1) != 0 && t_wait < 550000) {
+        esp_rom_delay_us(10);
+        t_wait += 10;
+    }
+    esp_rom_delay_us(25); /* Advance into payload byte */
     inject_uart_bit_flip_10us();
     wtf_safety_chirp_buzzer(20);
+    tk_dly_tsk(150); /* Visible LED hold */
     wtf_safety_set_state(WTF_STATE_ARMED);
-
     tm_printf((UB *)"[FUZZER] MANUAL INJECT: 10 µs UART bit flip on Row 12 (Probe 0)\n");
 
     if (g_mtx_probe_access > 0) {
@@ -107,10 +114,16 @@ EXPORT void wtf_fuzzer_inject_i2c_ack(void)
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
+    /* Synchronize to active I2C SCL clock on Probe 3 (GPIO7) */
+    uint32_t t_wait = 0;
+    while (((GPIO.in.val >> WTF_PIN_PROBE3_SCL) & 1) != 0 && t_wait < 250000) {
+        esp_rom_delay_us(10);
+        t_wait += 10;
+    }
     inject_i2c_ack_kill_50us();
     wtf_safety_chirp_buzzer(20);
+    tk_dly_tsk(150); /* Visible LED hold */
     wtf_safety_set_state(WTF_STATE_ARMED);
-
     tm_printf((UB *)"[FUZZER] MANUAL INJECT: 50 µs I2C ACK-kill on Row 43 (Probe 2)\n");
 
     if (g_mtx_probe_access > 0) {
@@ -129,10 +142,15 @@ EXPORT void wtf_fuzzer_inject_i2c_stretch(void)
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
+    uint32_t t_wait = 0;
+    while (((GPIO.in.val >> WTF_PIN_PROBE3_SCL) & 1) != 0 && t_wait < 250000) {
+        esp_rom_delay_us(10);
+        t_wait += 10;
+    }
     inject_i2c_clock_stretch_50us();
     wtf_safety_chirp_buzzer(20);
+    tk_dly_tsk(150); /* Visible LED hold */
     wtf_safety_set_state(WTF_STATE_ARMED);
-
     tm_printf((UB *)"[FUZZER] MANUAL INJECT: 50 µs I2C clock-stretch on Row 42 (Probe 3)\n");
 
     if (g_mtx_probe_access > 0) {

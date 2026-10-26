@@ -12,6 +12,7 @@
  */
 
 #include "daphne_uart.h"
+#include "daphne_pico_i2c.h"
 #include <tm/tmonitor.h>
 #include <sys/sysdef.h>
 #include <stdint.h>
@@ -86,6 +87,9 @@ LOCAL void daphne_uart_hw_init(void)
 
     /* Enable UART, RX and TX (0x301) */
     out_w(DAPHNE_UART_CR, (1 << 9) | (1 << 8) | (1 << 0));
+    /* Configure GP3 as physical indicator LED on Maker Pi Base */
+    daphne_hw_gpio_init_out(3);
+    daphne_hw_gpio_set(3, false);
 }
 
 LOCAL bool daphne_parse_line(const char *buf, uint32_t *out_ctr, uint16_t *out_csum)
@@ -273,13 +277,15 @@ EXPORT void daphne_uart_rx_task(INT stacd, void *exinf)
                             s_ber_stats.total_bits_monitored += frame_bits;
                             s_ber_stats.last_frame_bit_errors = 0;
                             s_last_counter = counter;
-
+                            daphne_hw_gpio_set(3, false); /* Valid: Turn OFF GP3 LED */
                             if ((s_ber_stats.valid_frames % 5) == 0 || s_ber_stats.valid_frames <= 3) {
                                 tm_printf((UB *)"[DAPHNE:UART] PKT #%u VALID (total=%u, valid=%u, corrupt=%u)\n",
                                           counter, s_ber_stats.total_frames, s_ber_stats.valid_frames, s_ber_stats.corrupt_frames);
                             }
                         } else {
                             /* Checksum corrupted by glitch */
+                            daphne_hw_gpio_set(3, true);  /* Corrupted: Turn ON GP3 LED */
+                            daphne_hw_buzzer_beep(25);     /* Audible chirp on corrupt frame */
                             s_ber_stats.corrupt_frames++;
                             uint32_t err_bits = daphne_calc_bit_diff(rx_line, (int)rx_idx, exp_line, exp_len);
                             if (err_bits == 0) {
@@ -306,6 +312,8 @@ EXPORT void daphne_uart_rx_task(INT stacd, void *exinf)
                     } else {
                         /* Framing corrupted: estimate expected counter from sequence */
                         s_ber_stats.corrupt_frames++;
+                        daphne_hw_gpio_set(3, true);   /* Framing error: Turn ON GP3 LED */
+                        daphne_hw_buzzer_beep(25);      /* Audible chirp on framing error */
                         uint32_t exp_ctr = (s_last_counter > 0) ? (s_last_counter + 1) : 1;
                         uint16_t exp_csum = (uint16_t)(~exp_ctr);
                         int exp_len = daphne_format_expected(exp_line, exp_ctr, exp_csum);

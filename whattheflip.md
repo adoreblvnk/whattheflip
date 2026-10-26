@@ -171,70 +171,70 @@ wireless sniffer:
 `./setup.sh` or `./setup.sh --skip-esp-idf`. Reference repos land in `third_party`, which is gitignored. The capture card is a Delkin USDCOEM-32GB (formatted FAT32, 32 KB cluster); cheaper cards spike past the 40 ms stall budget.
 
 
----
+## Bench implementation findings & deviations
 
- - iris (whattheflip/iris/ — Wireless Victim on bare ESP32-C6)
-   - SoftAP Beacon Broadcast:
-     - Isolated SoftAP on Wi-Fi Channel 6 with fixed BSSID 02:00:00:00:00:03 (FR-6
-       target).
-     - Periodic beacon and non-QoS data bursts to serve as promiscuous sniffer target.
-   - 802.15.4 Transmitter:
-     - Raw IEEE 802.15.4 packet burst generator on Channel 15 using esp_ieee802154
-       driver.
-     - Configurable transmission power and interval (100 ms to 1 s).
-   - Build & Flash Pipeline:
-     - CMakeLists.txt, Makefile, and README.md targeting bare ESP32-C6 board.
- - whattheflip (whattheflip/whattheflip/ — Main Diagnostic Tool on ESP32-C6)
-   - TSK_WIRELESS (FR-4, TC-2.1, TC-2.2):
-     - Wi-Fi 6 promiscuous sniffer across Channels 1–13 with RSSI and microsecond
-       timestamps.
-     - IEEE 802.15.4 promiscuous frame sniffer across Channels 11–26 (esp_ieee802154).
-     - Promiscuous RX callback budget enforcement: copy into MPF_PACKETS under 5 μs with
-       zero allocation.
-     - Radio time-slicing state machine: 1–2 s sniffer window on target channels,
-       alternating with Channel 6 SoftAP dashboard hosting.
-   - TSK_STORAGE (FR-8, TC-4.2):
-     - FatFS FAT32 filesystem mounting on Delkin USDCOEM-32GB card over bitbang SPI.
-     - Direct PCAP file write (.pcap) and periodic sector flush off MBF_STORAGE (depth
-       16).
-     - Erase-stall mitigation for card latency spikes up to 40 ms against the 32 KB
-       packet pool (Gap A4).
-   - TSK_FUZZER (FR-5, FR-6, TC-3.2, TC-3.3):
-     - I2C clock-stretch injection on Probe 3 (GPIO7): drive SCL LOW for 50 μs during
-       clock cycle.
-     - Targeted wireless frame injection (802.15.4 frame stress strictly directed to
-       Iris BSSID, never broadcast).
-   - TSK_DISCOVERY (FR-3, TC-1.3):
-     - Dynamic decoder remapping engine: remap any physical probe to any decoder in < 10
-       ms without hardware rewiring.
-     - Multi-probe RMT RX channel time-sharing (handling the 2-channel RMT RX hardware
-       limit, Gap A8).
-   - TSK_SAFETY Enhancements:
-     - Onboard Neopixel (WS2812 on GPIO8) status indicators (Green: Armed, Blue:
-       Sniffing, Yellow: Fuzzing, Red: Aborted).
-     - Physical piezo buzzer pulse on E-stop abort event.
-   - TSK_DASHBOARD (Interactive UI Controls):
-     - WebSocket handler for user-initiated single-glitch injections from the browser.
-     - Live PCAP capture download link over HTTP (GET /capture.pcap).
- - daphne (whattheflip/daphne/ — Victim B on RP2040)
-   - Fault Recovery & Bus Resilience:
-     - I2C bus recovery routine (clock generation sequence to free stuck slave lines
-       after ACK kill).
-     - Moving average variance tracking (detecting sensor drift or glitch impact).
-   - Glitched UART Statistics Reporting:
-     - Bit-error rate (BER) tracker calculating corrupted bits per packet during active
-       injection.
- - hestia (whattheflip/hestia/ — Victim A on RP2040)
-   - Transmission Agility:
-     - Support runtime rate adjustment (1 Hz, 2 Hz, 5 Hz, 10 Hz) via UART commands.
-     - Pattern injection test modes (alternating bit patterns 0xAA/0x55 for probe
-       verification).
- - shared (whattheflip/shared/)
-   - Canonical Protocol Headers:
-     - Shared packet_types.h header unifying UART and I2C frame struct layouts across
-       both RP2040 and ESP32-C6 builds.
-     - Shared checksum and CRC16 algorithms.
- - Verification & Test Automation (V-Model / Traceability):
-   - Python bench test scripts executing formal Test Cases TC-1.1 through TC-5.2 to
-     generate the required 5-column Traceability Matrix for the Week 10 / Week 13
-     tribunals.
+Differences between `whattheflip.md` baseline and verified bench implementation:
+
+1. **Buzzer driving**:
+   - *Baseline*: whattheflip drives buzzer on TCA9554 EXIO3.
+   - *Bench truth*: Generating 2 kHz audio requires 4,000 I2C start/stop/register transactions per second over GPIO22/23. The I2C expander cannot sustain this rate acoustically.
+   - *Implementation*: Daphne (RP2040) has native direct hardware wiring on GP18 (socket pin 24) to the Maker Pi Base buzzer transistor. Daphne's SIO drives the 2 kHz tone directly on boot and upon detecting bus faults.
+
+2. **Physical board fault indicators**:
+   - *Baseline*: Unspecified on victim boards.
+   - *Implementation*: Daphne drives Maker Pi Base GP2 blue LED (turns ON during I2C ACK-kill / 9-clock recovery) and GP3 blue LED (turns ON upon corrupted UART checksum/framing error).
+
+3. **Deterministic fault injection synchronization**:
+   - *Baseline*: Asynchronous timed glitches (10 µs UART, 50 µs I2C).
+   - *Bench truth*: At 2 Hz UART (1.4 ms burst / 500 ms) and 5 Hz I2C (240 µs read / 200 ms), asynchronous single glitches have a <0.3% probability of hitting an active frame.
+   - *Implementation*: `wtf_fuzzer` synchronizes to active bus edges: falls on Probe 1 (UART start bit) with 25 µs delay into payload, and falls on Probe 3 (I2C SCL clocking). Glitches hit transactions with 100% determinism. Visual yellow LED state holds for 150 ms to be human-visible.
+
+4. **Protocol auto-discovery sampling loop (FR-2)**:
+   - *Baseline*: DMA edge capture into RAM via RMT RX.
+   - *Bench truth*: C6 has only 2 RMT RX channels (Gap A8). In software edge capture, calling `tk_dly_tsk(1)` inside the edge loop causes 1 ms sleeps, making it impossible to sample 8.68 µs UART bits or 1.25 µs I2C clock half-periods.
+   - *Implementation*: Tight 50 ms burst sampling window without kernel sleep. Yields 10 ms between bursts. Resolves protocol lock in ~48 ms (UART) and ~52 ms (I2C).
+
+5. **MicroSD bitbang SPI timing**:
+   - *Baseline*: Standard SPI clock.
+   - *Bench truth*: Maker Pi Base GP12 (MISO) has an onboard blue LED with trace capacitance that drags down high-speed transitions.
+   - *Implementation*: 4 µs software bitbang delay enforced on SCK transitions. Delkin USDCOEM-32GB initializes via CMD0/CMD8/ACMD41 and writes FAT32 PCAP 2.4 records reliably.
+
+6. **Multi-board dashboard telemetry bridge**:
+   - *Baseline*: SoftAP HTTP/WebSocket server on whattheflip (192.168.4.1, Ch 6).
+   - *Augmentation*: Added `dashboard_bridge.py` on `localhost:8080`, reading all 3 serial devices (`/dev/cu.usbmodem101`, `/dev/cu.usbmodemMTK3PICO1`, `/dev/cu.usbmodem4`) concurrently. Displays live multi-board color-coded monospace streaming log, 5 Hz dynamic accelerometer/magnetometer orientation bars, and interactive fault buttons without disconnecting from internet Wi-Fi.
+
+## Hardware contradictions & bench gotchas
+
+- **Maker Pi Base buzzer switch**: A physical slide switch sits next to the audio jack (`BUZZER: OFF / ON`). If set to OFF, the buzzer coil is physically disconnected. Must be switched to ON.
+- **RP2040 pad controller (`PADS_BANK0`)**: Setting `sio_hw->gpio_oe_set` does NOT drive the pin if `PADS_BANK0` output disable (`OD`) bit is set (default on reset). Must clear `OD_BITS` in pad register before writing SIO.
+- **ESP32-C6 strapping pin matrix routing**: GPIO8 (WS2812) is a boot strapping pin. Must call `esp_rom_gpio_connect_out_signal(8, SIG_GPIO_OUT_IDX, false, false)` to route the GPIO output register to the physical pin.
+- **LSM303DLHC multi-byte read auto-increment**: Multi-byte burst reads on accelerometer registers require bit 7 (`0x80`) set on the register address (`OUT_X_L_A | 0x80 = 0xA8`), otherwise reading 6 bytes repeatedly returns byte 0.
+- **Sensor host exclusivity**: GY-511 sensor is wired exclusively to Daphne's rows (Row 42 SCL, Row 43 SDA). whattheflip probes (Probe 2 & 3) eavesdrop high-Z; they must never configure internal pull-ups that interfere with Daphne's master bus.
+
+## Remaining TODOs
+
+### 1. Wireless Victim (Iris)
+- [ ] Flash Iris firmware on bare ESP32-C6 (`whattheflip/iris/`):
+  - SoftAP beacon broadcast on Channel 6 (BSSID `02:00:00:00:00:03`).
+  - Periodic 802.15.4 frame transmitter on Channel 15.
+- [ ] Bench validation when 4th board is plugged into USB.
+
+### 2. Wireless Sniffer (`TSK_WIRELESS` — FR-4 / TC-2.1, TC-2.2)
+- [ ] Implement Wi-Fi 6 promiscuous callback filter (`esp_wifi_set_promiscuous`) on whattheflip.
+- [ ] Implement IEEE 802.15.4 sniffer (`esp_ieee802154`) on Channel 15.
+- [ ] Time-slicing state machine between SoftAP dashboard hosting (Ch 6) and sniffer hopping windows (1 to 2 s).
+- [ ] Stream wireless 802.11 / 802.15.4 frames into `MBF_STORAGE` for PCAP logging.
+
+### 3. Targeted Wireless Fault Injection (`TSK_FUZZER` — FR-6 / TC-3.3)
+- [ ] Implement targeted 802.15.4 channel-jam / stress bursts directed strictly at Iris BSSID (`02:00:00:00:00:03`), never broadcast.
+
+### 4. Web Dashboard UI Redesign & Polish
+- [ ] Replace progress bars with canvas/SVG pitch & roll attitude horizon indicator for Daphne's accel vector.
+- [ ] Add real-time rolling sparkline chart for packet throughput (pkts/s) and bit error rate (BER).
+- [ ] Add one-click export button for session log text file from the browser.
+
+### 5. MicroSD Native Hardware SPI Migration
+- [ ] Evaluate migrating from software bitbang SPI to native ESP-IDF SPI master driver using TCA9554 EXIO7 as CS to eliminate CPU overhead during high-rate wireless capture.
+
+### 6. Documentation & Tribunal Preparation
+- [ ] Standardize frozen design report and presentation slides with verified bench findings ahead of Week 10 check-in.
