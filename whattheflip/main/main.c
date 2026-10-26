@@ -12,6 +12,7 @@
 #include "wtf_fuzzer.h"
 #include "wtf_storage.h"
 #include "wtf_telemetry.h"
+#include "wtf_dashboard.h"
 
 #define TASK_STACK_SZ           3072
 #define STORAGE_STACK_SZ        4096
@@ -161,6 +162,7 @@ EXPORT INT usermain(void)
     launch_task("TSK_FUZZER",    (FP)wtf_fuzzer_task,    9,  TASK_STACK_SZ);
     launch_task("TSK_STORAGE",   (FP)wtf_storage_task,   10, STORAGE_STACK_SZ);
     launch_task("TSK_TELEMETRY", (FP)wtf_telemetry_task, 11, TASK_STACK_SZ);
+    launch_task("TSK_DASHBOARD", (FP)wtf_dashboard_task, 6,  4096);
 
     tm_printf((UB *)"[INIT] All 6 subsystem tasks launched. Initial task sleeping forever.\n\n");
     tk_slp_tsk(TMO_FEVR);
