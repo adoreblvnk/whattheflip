@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = [
+#   "pyserial",
+# ]
+# ///
 """
 dashboard_bridge.py - Multi-Board Interactive Diagnostic Dashboard Bridge
 Connects to whattheflip (ESP32-C6), daphne (RP2040), and hestia (RP2040)
@@ -18,6 +23,7 @@ PORT = 8080
 WTF_PORT = "/dev/cu.usbmodem101"
 DAPHNE_PORT = "/dev/cu.usbmodemMTK3PICO1"
 HESTIA_PORT = "/dev/cu.usbmodem4"
+IRIS_PORT = "/dev/cu.usbmodem11301"
 
 # Global state
 state = {
@@ -25,6 +31,9 @@ state = {
     "uart_pkts": 0,
     "i2c_pkts": 0,
     "fuzz_cycles": 0,
+    "wifi_pkts": 0,
+    "ieee154_pkts": 0,
+    "iris_tx": 0,
     "uart_locked": True,
     "i2c_locked": True,
     "safety": "ARMED",
@@ -66,13 +75,16 @@ def whattheflip_reader():
                     continue
                 add_log("WTF", line)
                 with lock:
-                    m = re.search(r"UART_pkts=(\d+)\s*\|\s*I2C_pkts=(\d+)\s*\|\s*Alerts=(\d+)\s*\|\s*Safety=(\w+)", line)
+                    m = re.search(r"UART_pkts=(\d+)\s*\|\s*I2C_pkts=(\d+)(?:\s*\|\s*WiFi_pkts=(\d+)\s*\|\s*802154_pkts=(\d+))?\s*\|\s*Alerts=(\d+)\s*\|\s*Safety=(\w+)", line)
                     if m:
                         state["uart_pkts"] = int(m.group(1))
                         state["i2c_pkts"] = int(m.group(2))
-                        state["fuzz_cycles"] = int(m.group(3))
-                        state["safety"] = m.group(4)
-                    
+                        if m.group(3):
+                            state["wifi_pkts"] = int(m.group(3))
+                        if m.group(4):
+                            state["ieee154_pkts"] = int(m.group(4))
+                        state["fuzz_cycles"] = int(m.group(5))
+                        state["safety"] = m.group(6)
                     if "[FUZZER] INJECT:" in line or "MANUAL INJECT:" in line:
                         state["recent_event"] = line
                     
@@ -150,6 +162,24 @@ def hestia_reader():
             add_log("HESTIA", f"[WARN] {e}")
             time.sleep(1.0)
 
+def iris_reader():
+    while True:
+        try:
+            ser = serial.Serial(IRIS_PORT, 115200, timeout=0.5)
+            add_log("IRIS", f"[ONLINE] Connected to {IRIS_PORT}")
+            while True:
+                line = ser.readline().decode("latin1", errors="replace").strip()
+                if not line:
+                    continue
+                add_log("IRIS", line)
+                with lock:
+                    m = re.search(r"TX Frame #(\d+) on Ch (\d+)", line)
+                    if m:
+                        state["iris_tx"] = int(m.group(1))
+        except Exception as e:
+            add_log("IRIS", f"[WARN] {e}")
+            time.sleep(1.0)
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         global s_wtf_global
@@ -159,6 +189,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 s_wtf_global.write(cmd.encode("ascii"))
                 s_wtf_global.flush()
                 add_log("ACTION", f"Dispatched hardware command: '{cmd}'")
+            with lock:
+                if cmd.upper() == 'E':
+                    state["safety"] = "ABORTED"
+                    state["recent_event"] = "EMERGENCY STOP ACTIVATED! Probes floated in < 200 ns."
+                elif cmd.upper() == 'R':
+                    state["safety"] = "ARMED"
+                    state["recent_event"] = "SYSTEM RE-ARMED. Normal monitoring restored."
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
@@ -171,7 +208,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            html_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist", "index.html")
+            if os.path.exists(html_dist):
+                with open(html_dist, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.wfile.write(HTML_PAGE.encode("utf-8"))
         elif self.path == "/telemetry":
             self.send_response(200)
             self.send_header("Content-type", "application/json")
@@ -227,7 +269,7 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-
 .bar-fill{height:100%;background:var(--accent);width:50%;transition:width .1s linear}
 .term{background:#010409;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;height:260px;overflow-y:auto;display:flex;flex-direction:column-reverse}
 .term-line{margin:2px 0;line-height:1.4}
-.src-wtf{color:#7ee787}.src-daphne{color:var(--purple)}.src-hestia{color:var(--accent)}.src-action{color:var(--yellow)}
+.src-wtf{color:#7ee787}.src-daphne{color:var(--purple)}.src-hestia{color:var(--accent)}.src-iris{color:#ff7b72}.src-action{color:var(--yellow)}
 .tab-bar{display:flex;gap:8px;margin-bottom:8px}
 .tab{padding:6px 12px;background:#21262d;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
 .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -264,6 +306,9 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-
       <div class="row"><span>Daphne Valid Frames:</span><span id="v-val" class="val">0</span></div>
       <div class="row"><span>Corrupted Frames:</span><span id="v-cor" class="val alert">0</span></div>
       <div class="row"><span>Scientific BER:</span><span id="v-ber-exp" class="val">0.0e0</span></div>
+      <div class="row"><span>Wi-Fi 6 Frames (Ch 1..13):</span><span id="v-wifi" class="val">0</span></div>
+      <div class="row"><span>802.15.4 Frames (Ch 15):</span><span id="v-154" class="val">0</span></div>
+      <div class="row"><span>Iris 802.15.4 TX Bursts:</span><span id="v-itx" class="val">0</span></div>
       <div class="row"><span>Wireshark PCAP Size:</span><span id="v-pcap" class="val">5004 B</span></div>
     </div>
     <div><a href="/capture.pcap" download="capture.pcap" class="btn pcap">Download capture.pcap</a></div>
@@ -276,6 +321,7 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-
       <button class="btn fuzz" onclick="trigger('U', 'Injected 10 µs UART Bit Flip on Row 12 (Probe 0)')">⚡ Inject UART Bit Flip (10 µs)</button>
       <button class="btn fuzz" onclick="trigger('A', 'Injected 50 µs I2C ACK-Kill on Row 43 (Probe 2)')">💥 Inject I2C ACK-Kill (50 µs)</button>
       <button class="btn fuzz" onclick="trigger('S', 'Injected 50 µs I2C Clock Stretch on Row 42 (Probe 3)')">⏱️ Inject I2C Clock Stretch (50 µs)</button>
+      <button class="btn fuzz" onclick="trigger('W', 'Injected Targeted 802.15.4 Jam to Iris BSSID 02:00:00:00:00:03 (FR-6)')">📡 Inject Wireless Jam to Iris (FR-6)</button>
       <button class="btn estop" onclick="trigger('E', 'EMERGENCY STOP! Probes floated in < 200 ns.')">🛑 TRIGGER HARDWARE E-STOP</button>
     </div>
   </div>
@@ -289,6 +335,7 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-
       <span class="tab" onclick="setFilter('WTF', this)">WHATTHEFLIP</span>
       <span class="tab" onclick="setFilter('DAPHNE', this)">DAPHNE</span>
       <span class="tab" onclick="setFilter('HESTIA', this)">HESTIA</span>
+      <span class="tab" onclick="setFilter('IRIS', this)">IRIS</span>
     </div>
     <span style="font-size:12px;color:#8b949e">Streaming Live @ 5 Hz</span>
   </div>
@@ -358,6 +405,9 @@ function pollTelemetry(){
     document.getElementById('v-val').textContent = d.valid_frames || 0;
     document.getElementById('v-cor').textContent = d.corrupted_frames || 0;
     document.getElementById('v-pcap').textContent = (d.pcap_bytes || 5004) + ' B';
+    document.getElementById('v-wifi').textContent = d.wifi_pkts || 0;
+    document.getElementById('v-154').textContent = d.ieee154_pkts || 0;
+    document.getElementById('v-itx').textContent = d.iris_tx || 0;
     
     var bSafe = document.getElementById('b-safety');
     bSafe.textContent = 'SAFETY: ' + d.safety;
@@ -390,7 +440,8 @@ def main():
     t_wtf.start()
     t_daphne.start()
     t_hestia.start()
-
+    t_iris = threading.Thread(target=iris_reader, daemon=True)
+    t_iris.start()
     server = HTTPServer(("0.0.0.0", PORT), DashboardHandler)
     print(f"=== whattheflip Multi-Board Dashboard Bridge Online ===")
     print(f"Open in your browser: http://localhost:{PORT}")

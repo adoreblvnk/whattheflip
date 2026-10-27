@@ -32,36 +32,28 @@ The test suite verifies the 3 wired hardware devices on the bench over USB-CDC s
 The runner is implemented in `verify_bench_traceability.py` using `pyserial`.
 
 ### Prerequisites
-Python 3.8+ with `pyserial`:
-```bash
-pip install pyserial
-```
+Installed `uv`. Dependencies (`pyserial`) are defined inline via PEP 723 and resolved automatically on first run.
 
 ### Option A: Live Hardware Execution (Bench Mode)
-To run automated verification against the three live hardware ports:
 ```bash
-python3 whattheflip/tests/verify_bench_traceability.py
+uv run whattheflip/tests/verify_bench_traceability.py
 ```
-Customizing serial endpoints or baudrate:
+Customizing endpoints:
 ```bash
-python3 whattheflip/tests/verify_bench_traceability.py \
+uv run whattheflip/tests/verify_bench_traceability.py \
   --wtf-port /dev/cu.usbmodem101 \
-  --hestia-port /dev/cu.usbmodem4 \
-  --daphne-port /dev/cu.usbmodemMTK3PICO1 \
-  --baud 115200 \
+  --iris-port /dev/cu.usbmodem11301 \
   --output-markdown whattheflip/tests/TRACEABILITY_MATRIX.md
 ```
 
 ### Option B: Emulated / CI Mode (No Hardware Required)
-To verify the test logic, binary PCAP parser, and matrix formatting without physical hardware plugged in:
 ```bash
-python3 whattheflip/tests/verify_bench_traceability.py --mock
+uv run whattheflip/tests/verify_bench_traceability.py --mock
 ```
 
 ### Option C: Standalone PCAP Binary Validation
-To validate an actual PCAP file dumped from the Delkin USDCOEM-32GB microSD card:
 ```bash
-python3 whattheflip/tests/verify_bench_traceability.py --pcap-file /path/to/capture.pcap
+uv run whattheflip/tests/verify_bench_traceability.py --pcap-file /path/to/capture.pcap
 ```
 
 ---
