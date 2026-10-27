@@ -12,6 +12,7 @@
 #include "wtf_discovery.h"
 #include "wtf_storage.h"
 #include "wtf_fuzzer.h"
+#include "dashboard_html.h"
 #include "../../shared/packet_types.h"
 
 #include <string.h>
@@ -33,116 +34,37 @@ static httpd_handle_t s_http_server = NULL;
 static int s_ws_fds[MAX_WS_CLIENTS];
 static uint32_t s_alert_counter = 0U;
 
-/* Embedded Single-Page Dashboard HTML / CSS / JS */
-static const char index_html[] =
-"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
-"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">"
-"<title>whattheflip Diagnostic Dashboard</title>"
-"<style>"
-"body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;padding:16px}"
-".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #30363d;padding-bottom:12px;margin-bottom:16px}"
-".title{font-size:22px;font-weight:700;color:#58a6ff}.badge{display:inline-block;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;margin-left:6px;background:#238636;color:#fff}"
-".badge.warn{background:#d29922}.badge.alert{background:#f85149}"
-".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}"
-".card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;display:flex;flex-direction:column;justify-content:space-between}"
-".card h3{margin-top:0;font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}"
-".stat{font-size:30px;font-weight:700;color:#f0f6fc;margin:6px 0}"
-".row{display:flex;justify-content:space-between;margin:5px 0;font-size:13px}"
-".val{font-weight:600;color:#7ee787}.val.warn{color:#d29922}.val.alert{color:#f85149}"
-"#alert-box{display:none;background:#f85149;color:#fff;padding:12px;border-radius:6px;margin-bottom:16px;font-weight:700;text-align:center;animation:pulse 1s infinite}"
-"@keyframes pulse{0%{opacity:1}50%{opacity:.7}100%{opacity:1}}"
-".btn{display:block;width:100%;box-sizing:border-box;padding:10px 14px;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;text-align:center;text-decoration:none;margin-top:8px}"
-".btn.pcap{background:#1f6feb;color:#fff}"
-".btn.pcap:hover{background:#388bfd}"
-".btn.fuzz{background:#21262d;color:#e6edf3;border:1px solid #30363d}"
-".btn.fuzz:hover{background:#30363d;border-color:#8b949e}"
-".btn.estop{background:#da3633;color:#fff;font-size:15px;padding:12px}"
-".btn.estop:hover{background:#b62324}"
-"</style></head><body>"
-"<div class=\"hdr\"><div><span class=\"title\">whattheflip</span> <span class=\"badge\">µT-Kernel 3.0</span> <span class=\"badge\">ESP32-C6</span></div>"
-"<div id=\"ws-status\" class=\"badge warn\">WS Connecting...</div></div>"
-"<div id=\"alert-box\">ALERT: HIGH PRIORITY EVENT</div>"
-"<div class=\"grid\">"
-"<div class=\"card\"><div><h3>Discovery &amp; Protocol Lock (FR-2)</h3>"
-"<div class=\"row\"><span>Probe 1 (UART):</span><span id=\"u-lock\" class=\"val\">SEARCHING</span></div>"
-"<div class=\"row\"><span>Probes 2 &amp; 3 (I2C):</span><span id=\"i-lock\" class=\"val\">SEARCHING</span></div>"
-"<div class=\"row\"><span>Remap Matrix (FR-3):</span><span class=\"val\">&lt; 10 ms Dynamic</span></div>"
-"<div class=\"row\"><span>Confidence (TC-1.2):</span><span class=\"val\">&gt; 95% (±2%)</span></div></div></div>"
-"<div class=\"card\"><div><h3>Packet Sniffer (FR-1)</h3>"
-"<div class=\"stat\" id=\"stat-pkts\">0</div>"
-"<div class=\"row\"><span>UART Telemetry:</span><span id=\"u-pkts\" class=\"val\">0</span></div>"
-"<div class=\"row\"><span>I2C Transactions:</span><span id=\"i-pkts\" class=\"val\">0</span></div>"
-"<div class=\"row\"><span>Sampling Resolution:</span><span class=\"val\">1 µs Edges</span></div></div></div>"
-"<div class=\"card\"><div><h3>Bit Error Rate (BER)</h3>"
-"<div class=\"stat\" id=\"stat-ber\">0.000%</div>"
-"<div class=\"row\"><span>Scientific BER:</span><span id=\"stat-ber-exp\" class=\"val\">0.0e0</span></div>"
-"<div class=\"row\"><span>Sniffed Bits:</span><span id=\"stat-bits\" class=\"val\">0</span></div>"
-"<div class=\"row\"><span>Corrupted Frames:</span><span id=\"stat-corrupted\" class=\"val alert\">0</span></div></div></div>"
-"<div class=\"card\"><div><h3>I2C Bus Latency &amp; Stretch</h3>"
-"<div class=\"stat\" id=\"stat-latency\">245 µs</div>"
-"<div class=\"row\"><span>Nominal (400 kHz):</span><span class=\"val\">240 µs</span></div>"
-"<div class=\"row\"><span>Peak (Stretched):</span><span id=\"stat-latency-peak\" class=\"val warn\">295 µs</span></div>"
-"<div class=\"row\"><span>Recovery Routine:</span><span class=\"val\">Daphne 9-Clock</span></div></div></div>"
-"<div class=\"card\"><div><h3>Wireshark PCAP (FR-8, TC-4.2)</h3>"
-"<div class=\"row\"><span>Capture Size:</span><span id=\"pcap-size\" class=\"val\">24 B</span></div>"
-"<div class=\"row\"><span>Storage Media:</span><span class=\"val\">Delkin FAT32</span></div>"
-"<div class=\"row\"><span>Cluster Buffering:</span><span class=\"val\">32 KB (Gap A4)</span></div></div>"
-"<div><a href=\"/capture.pcap\" download=\"capture.pcap\" class=\"btn pcap\">Download capture.pcap</a></div></div>"
-"<div class=\"card\"><div><h3>Daphne Sensor Vector (400 kHz)</h3>"
-"<div class=\"row\"><span>Accel X:</span><span id=\"acc-x\" class=\"val\">-30 mg</span></div>"
-"<div class=\"row\"><span>Accel Y:</span><span id=\"acc-y\" class=\"val\">54 mg</span></div>"
-"<div class=\"row\"><span>Accel Z (1g):</span><span id=\"acc-z\" class=\"val\">982 mg</span></div>"
-"<div class=\"row\"><span>Mag Vector:</span><span id=\"mag-vec\" class=\"val\">Active</span></div></div></div>"
-"<div class=\"card\"><div><h3>Fault Injector Controls (FR-5)</h3>"
-"<div class=\"row\"><span>Injected Cycles:</span><span id=\"stat-fuzz\" class=\"val\">0</span></div>"
-"<div class=\"row\"><span>Glitch Duty Cycle:</span><span class=\"val\">&lt; 0.005% (&lt; 5% limit)</span></div></div>"
-"<div><button class=\"btn fuzz\" onclick=\"sendCmd('FUZZ_UART')\">Inject UART Bit Flip (10 µs)</button>"
-"<button class=\"btn fuzz\" onclick=\"sendCmd('FUZZ_I2C_ACK')\">Inject I2C ACK-Kill (50 µs)</button>"
-"<button class=\"btn fuzz\" onclick=\"sendCmd('FUZZ_I2C_STRETCH')\">Inject I2C Clock Stretch (50 µs)</button></div></div>"
-"<div class=\"card\"><div><h3>Safety &amp; E-Stop (FR-7, TC-4.1)</h3>"
-"<div class=\"row\"><span>Hardware E-Stop:</span><span id=\"safe-status\" class=\"val\">ARMED</span></div>"
-"<div class=\"row\"><span>Float Latency:</span><span class=\"val\">&lt; 200 ns</span></div></div>"
-"<div><button class=\"btn estop\" onclick=\"sendCmd('ESTOP')\">TRIGGER HARDWARE E-STOP</button></div></div>"
-"</div><script>"
-"var ws,wsStatus=document.getElementById('ws-status'),alertBox=document.getElementById('alert-box');"
-"function connect(){"
-"ws=new WebSocket('ws://'+window.location.host+'/ws');"
-"ws.onopen=function(){wsStatus.textContent='WS Connected (2Hz)';wsStatus.className='badge';};"
-"ws.onclose=function(){wsStatus.textContent='WS Disconnected';wsStatus.className='badge alert';setTimeout(connect,1000);};"
-"ws.onmessage=function(e){"
-"try{var d=JSON.parse(e.data);"
-"if(d.type==='telemetry'){"
-"document.getElementById('u-pkts').textContent=d.uart_pkts;"
-"document.getElementById('i-pkts').textContent=d.i2c_pkts;"
-"document.getElementById('stat-pkts').textContent=d.uart_pkts+d.i2c_pkts;"
-"document.getElementById('stat-fuzz').textContent=d.fuzz_cycles;"
-"document.getElementById('u-lock').textContent=d.uart_locked?'LOCKED (115200)':'SEARCHING';"
-"document.getElementById('i-lock').textContent=d.i2c_locked?'LOCKED (400kHz)':'SEARCHING';"
-"document.getElementById('safe-status').textContent=d.safety;"
-"document.getElementById('stat-ber').textContent=d.ber_percent||'0.000%';"
-"document.getElementById('stat-ber-exp').textContent=d.ber||'0.0e0';"
-"document.getElementById('stat-bits').textContent=d.total_bits||'0';"
-"document.getElementById('stat-corrupted').textContent=d.corrupted_frames||'0';"
-"document.getElementById('stat-latency').textContent=(d.i2c_latency_us||245)+' µs';"
-"document.getElementById('stat-latency-peak').textContent=(d.i2c_latency_peak_us||295)+' µs';"
-"document.getElementById('pcap-size').textContent=(d.pcap_bytes||24)+' B';"
-"if(d.accel){document.getElementById('acc-x').textContent=d.accel.x+' mg';"
-"document.getElementById('acc-y').textContent=d.accel.y+' mg';"
-"document.getElementById('acc-z').textContent=d.accel.z+' mg';}"
-"if(d.mag){document.getElementById('mag-vec').textContent='X:'+d.mag.x+' Y:'+d.mag.y+' Z:'+d.mag.z;}"
-"}else if(d.type==='alert'){"
-"alertBox.textContent=d.msg;alertBox.style.display='block';"
-"setTimeout(function(){alertBox.style.display='none';},3000);}"
-"}catch(err){console.error(err);}};"
-"}"
-"function sendCmd(cmd){if(ws&&ws.readyState===WebSocket.OPEN){ws.send(cmd);}}"
-"window.onload=connect;"
-"</script></body></html>";
-
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, index_html, sizeof(index_html) - 1);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)g_dashboard_html_gz, g_dashboard_html_gz_len);
+}
+
+static esp_err_t cmd_post_handler(httpd_req_t *req)
+{
+    char query[32];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(query, "c", val, sizeof(val)) == ESP_OK) {
+            char c = val[0];
+            if (c == 'E' || c == 'e') {
+                wtf_safety_abort();
+            } else if (c == 'R' || c == 'r') {
+                wtf_safety_rearm();
+            } else if (c == 'U' || c == 'u') {
+                wtf_fuzzer_inject_uart();
+            } else if (c == 'A' || c == 'a') {
+                wtf_fuzzer_inject_i2c_ack();
+            } else if (c == 'S' || c == 's') {
+                wtf_fuzzer_inject_i2c_stretch();
+            } else if (c == 'W' || c == 'w') {
+                wtf_fuzzer_inject_wireless_jam();
+            }
+        }
+    }
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "OK", 2);
 }
 
 /* HTTP GET /capture.pcap handler: streams captured PCAP to browser (FR-8, TC-4.2) */
@@ -385,10 +307,18 @@ static void start_web_server(void)
         .is_websocket = true,
     };
 
+    httpd_uri_t cmd_uri = {
+        .uri      = "/cmd",
+        .method   = HTTP_POST,
+        .handler  = cmd_post_handler,
+        .user_ctx = NULL,
+    };
+
     if (httpd_start(&s_http_server, &config) == ESP_OK) {
         httpd_register_uri_handler(s_http_server, &root_uri);
         httpd_register_uri_handler(s_http_server, &pcap_uri);
         httpd_register_uri_handler(s_http_server, &ws_uri);
+        httpd_register_uri_handler(s_http_server, &cmd_uri);
         tm_printf((UB *)"[DASHBOARD] HTTP & WebSocket server online on port 80 (FR-9, FR-10)\n");
     } else {
         tm_printf((UB *)"[DASHBOARD] ERROR: Failed to start HTTP server\n");
@@ -409,6 +339,8 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
 
     uint32_t uart_count = 0U;
     uint32_t i2c_count = 0U;
+    uint32_t wifi_count = 0U;
+    uint32_t ieee154_count = 0U;
     uint32_t fuzz_count = 0U;
     uint32_t total_bits = 0U;
     uint32_t corrupted_frames = 0U;
@@ -453,6 +385,10 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
                 /* Nominal transaction latency at 400 kHz with slight jitter */
                 i2c_latency_us = 242U + (i2c_count % 7U);
 
+            } else if (rec.protocol == PROTO_WIFI) {
+                wifi_count++;
+            } else if (rec.protocol == PROTO_IEEE802154) {
+                ieee154_count++;
             } else if (rec.protocol == PROTO_FAULT_ALERT) {
                 fuzz_count++;
                 corrupted_frames++;
@@ -476,8 +412,9 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
                                   i2c_latency_us, i2c_peak_latency_us);
 
         /* Periodic serial telemetry line at 2 Hz */
-        tm_printf((UB *)"[DASHBOARD:2Hz] Telemetry: UART_pkts=%u | I2C_pkts=%u | Alerts=%u | Safety=%s\n",
-                  (unsigned)uart_count, (unsigned)i2c_count, (unsigned)fuzz_count,
+        tm_printf((UB *)"[DASHBOARD:2Hz] Telemetry: UART_pkts=%u | I2C_pkts=%u | WiFi_pkts=%u | 802154_pkts=%u | Alerts=%u | Safety=%s\n",
+                  (unsigned)uart_count, (unsigned)i2c_count, (unsigned)wifi_count, (unsigned)ieee154_count,
+                  (unsigned)fuzz_count,
                   wtf_safety_is_aborted() ? "ABORTED" : "ARMED");
 
         tk_dly_tsk(500);

@@ -47,6 +47,7 @@ typedef enum {
 #define WTF_FAULT_UART_BIT_FLIP     1
 #define WTF_FAULT_I2C_ACK_KILL      2
 #define WTF_FAULT_I2C_CLOCK_STRETCH 3
+#define WTF_FAULT_154_TARGETED_JAM  4
 /* MicroSD Bitbang SPI Pins (Maker Pi Base GP15 jumpered to GP13 -> GPIO21) */
 #define WTF_PIN_SD_SCK          18
 #define WTF_PIN_SD_MOSI         19
@@ -58,6 +59,8 @@ typedef enum {
 #define PROTO_UART              1
 #define PROTO_I2C               2
 #define PROTO_FAULT_ALERT       3
+#define PROTO_WIFI              4
+#define PROTO_IEEE802154        5
 
 /* Event Flag Bits */
 #define FLG_BIT_SAFETY_ABORT    (1 << 0)

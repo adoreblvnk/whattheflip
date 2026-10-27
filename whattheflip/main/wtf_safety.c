@@ -8,6 +8,7 @@
 #include "wtf_safety.h"
 #include "soc/gpio_struct.h"
 #include "soc/gpio_reg.h"
+#include "soc/usb_serial_jtag_reg.h"
 #include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_cpu.h"
@@ -306,6 +307,13 @@ EXPORT void wtf_safety_abort(void)
     }
 }
 
+EXPORT void wtf_safety_rearm(void)
+{
+    s_safety_latched = false;
+    wtf_safety_set_state(WTF_STATE_ARMED);
+    tm_printf((UB *)"[SAFETY] SYSTEM RE-ARMED: Probes restored, monitoring resumed\n");
+}
+
 EXPORT void wtf_safety_task(INT stacd, void *exinf)
 {
     (void)stacd;
@@ -323,7 +331,15 @@ EXPORT void wtf_safety_task(INT stacd, void *exinf)
                            TWF_ANDW, &flgptn, 50);
 
         uint8_t rx_char = 0;
-        if (esp_rom_output_rx_one_char(&rx_char) == 0) {
+        bool has_char = false;
+        if ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) != 0) {
+            rx_char = (uint8_t)(REG_READ(USB_SERIAL_JTAG_EP1_REG) & 0xFF);
+            has_char = true;
+        } else if (esp_rom_output_rx_one_char(&rx_char) == 0) {
+            has_char = true;
+        }
+
+        if (has_char) {
             if (rx_char == 'E' || rx_char == 'e') {
                 wtf_safety_abort();
             } else if (rx_char == 'U' || rx_char == 'u') {
@@ -332,6 +348,10 @@ EXPORT void wtf_safety_task(INT stacd, void *exinf)
                 wtf_fuzzer_inject_i2c_ack();
             } else if (rx_char == 'S' || rx_char == 's') {
                 wtf_fuzzer_inject_i2c_stretch();
+            } else if (rx_char == 'W' || rx_char == 'w') {
+                wtf_fuzzer_inject_wireless_jam();
+            } else if (rx_char == 'R' || rx_char == 'r') {
+                wtf_safety_rearm();
             }
         }
 
@@ -349,13 +369,25 @@ EXPORT void wtf_safety_task(INT stacd, void *exinf)
             /* Invariant: Tasks settle within 5 ms */
             tk_dly_tsk(5);
 
-            for (;;) {
+            while (s_safety_latched) {
                 /* Float continuously */
                 GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
                                        (1UL << WTF_PIN_PROBE1_SNIFF)  |
                                        (1UL << WTF_PIN_PROBE2_SDA)    |
                                        (1UL << WTF_PIN_PROBE3_SCL);
-                tk_dly_tsk(1000);
+                uint8_t c = 0;
+                bool got_rearm = false;
+                if ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) != 0) {
+                    c = (uint8_t)(REG_READ(USB_SERIAL_JTAG_EP1_REG) & 0xFF);
+                    got_rearm = (c == 'R' || c == 'r');
+                } else if (esp_rom_output_rx_one_char(&c) == 0) {
+                    got_rearm = (c == 'R' || c == 'r');
+                }
+                if (got_rearm) {
+                    wtf_safety_rearm();
+                    break;
+                }
+                tk_dly_tsk(50);
             }
         }
     }

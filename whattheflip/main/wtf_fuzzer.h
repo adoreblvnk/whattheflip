@@ -15,10 +15,14 @@ EXPORT void wtf_fuzzer_task(INT stacd, void *exinf);
 EXPORT void inject_uart_bit_flip_10us(void);
 EXPORT void inject_i2c_ack_kill_50us(void);
 EXPORT void inject_i2c_clock_stretch_50us(void);
+EXPORT void inject_wireless_target_jam_50us(void);
 
 /* Higher-level safe injectors (mutex-protected with LED & buzzer feedback) */
 EXPORT void wtf_fuzzer_inject_uart(void);
 EXPORT void wtf_fuzzer_inject_i2c_ack(void);
 EXPORT void wtf_fuzzer_inject_i2c_stretch(void);
+EXPORT void wtf_fuzzer_inject_wireless_jam(void);
+EXPORT void wtf_fuzzer_set_auto(bool enable);
+EXPORT bool wtf_fuzzer_get_auto(void);
 
 #endif /* WTF_FUZZER_H */
