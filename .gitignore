@@ -21,3 +21,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Node build / generated artifacts
+node_modules/
+frontend/dist/

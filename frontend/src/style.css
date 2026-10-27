@@ -1,0 +1,556 @@
+/* Technical Editorial Minimalist Theme for whattheflip */
+:root {
+  --bg-canvas: #f7f6f2;
+  --bg-surface: #ffffff;
+  --bg-muted: #eeebd9;
+  --bg-hover: #eae6d4;
+  --border-dim: #e2ded4;
+  --border-bold: #c4beaf;
+  
+  --text-main: #1a1a18;
+  --text-muted: #5e5d59;
+  --text-dim: #8c8a82;
+  
+  --primary: #854224;
+  --primary-hover: #9c4f2c;
+  --primary-fg: #ffffff;
+  
+  --c-green-text: #15803d;
+  --c-green-bg: #dcfce7;
+  --c-green-border: #86efac;
+  
+  --c-amber-text: #b45309;
+  --c-amber-bg: #fef3c7;
+  --c-amber-border: #fcd34d;
+  
+  --c-red-text: #b91c1c;
+  --c-red-bg: #fee2e2;
+  --c-red-border: #fca5a5;
+  --c-red-solid: #dc2626;
+  --c-red-solid-hover: #b91c1c;
+  
+  --c-uart: #0284c7;
+  --c-uart-bg: #e0f2fe;
+  --c-i2c: #7c3aed;
+  --c-i2c-bg: #f3e8ff;
+  --c-wifi: #2563eb;
+  --c-wifi-bg: #dbeafe;
+  --c-zigbee: #c2410c;
+  --c-zigbee-bg: #ffedd5;
+  --c-fault: #b91c1c;
+  --c-fault-bg: #fee2e2;
+
+  /* Wireshark filter styling */
+  --ws-filter-bg: #f0fdf4;
+  --ws-filter-border: #86efac;
+  --ws-filter-text: #14532d;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --radius: 2px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg-canvas);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  padding: 12px 18px;
+  overflow-x: hidden;
+}
+
+.app-container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Floating Toast (Zero Layout Shift) */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 18px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: #24221f;
+  color: #f7f6f2;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+  border-left: 3px solid var(--primary);
+  animation: toast-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Top Navigation Bar */
+.top-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-dim);
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+  font-family: var(--font-mono);
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.header-status-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-baseline-nav {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c-green-text);
+  background: var(--c-green-bg);
+  border: 1px solid var(--c-green-border);
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.btn-baseline-nav:hover {
+  background: #bbf7d0;
+}
+
+.btn-pcap {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--primary-fg);
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-pcap:hover {
+  background: var(--primary-hover);
+}
+
+.btn-estop-nav {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--c-red-solid);
+  border: 1px solid var(--c-red-solid);
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 0.15s;
+}
+.btn-estop-nav:hover {
+  background: var(--c-red-solid-hover);
+}
+
+.btn-rearm-nav {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--c-green-text);
+  border: 1px solid var(--c-green-text);
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-rearm-nav:hover {
+  background: #166534;
+}
+
+/* Layout */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+}
+
+.panel-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Card Style */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.card-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-dim);
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Scenario 4-Tab Switcher inside Left Card */
+.scenario-tab-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  padding: 3px;
+  margin-bottom: 10px;
+}
+.scenario-tab {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.1s;
+}
+.scenario-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+.scenario-tab.active {
+  background: var(--bg-surface);
+  color: var(--primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.scenario-desc-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+.btn-scenario-action {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border-bold);
+  color: var(--text-main);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: all 0.12s;
+  width: 100%;
+}
+.btn-scenario-action:hover {
+  background: var(--bg-hover);
+  border-color: var(--primary);
+}
+.btn-scenario-action .tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  padding: 2px 6px;
+  border-radius: var(--radius);
+}
+
+/* Wireshark Display Filter Toolbar (Mimicking Wireshark UI) */
+.wireshark-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--ws-filter-bg);
+  border: 1px solid var(--ws-filter-border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  margin-bottom: 10px;
+}
+
+.ws-filter-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ws-filter-text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-left: 2px;
+}
+
+.ws-filter-select {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-main);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+  outline: none;
+  cursor: pointer;
+}
+
+.ws-filter-input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-main);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  outline: none;
+}
+.ws-filter-input::placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.ws-filter-input:focus {
+  border-color: var(--primary);
+}
+
+.btn-ws-clear {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.btn-ws-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+/* Stream Table */
+.stream-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  height: 325px;
+  overflow-y: auto;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  max-width: 100%;
+}
+.stream-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.stream-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-dim);
+  letter-spacing: 0.05em;
+  z-index: 1;
+}
+.stream-table tr {
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-dim);
+  color: var(--text-main);
+  transition: background 0.08s;
+}
+.stream-table tr:hover {
+  background: var(--bg-hover);
+}
+.stream-table tr.selected {
+  background: #faebe3;
+  font-weight: 600;
+}
+.stream-table td {
+  padding: 5px 8px;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+.stream-table td.summary-col {
+  max-width: 440px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Protocol Badges */
+.tag-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  display: inline-block;
+}
+.tag-badge.uart { color: var(--c-uart); background: var(--c-uart-bg); }
+.tag-badge.i2c { color: var(--c-i2c); background: var(--c-i2c-bg); }
+.tag-badge.wifi { color: var(--c-wifi); background: var(--c-wifi-bg); }
+.tag-badge.zigbee { color: var(--c-zigbee); background: var(--c-zigbee-bg); }
+.tag-badge.fault { color: var(--c-fault); background: var(--c-fault-bg); }
+
+/* Hex Inspector */
+.inspector-card {
+  margin-top: 10px;
+}
+.inspector-meta {
+  display: flex;
+  gap: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+  flex-wrap: wrap;
+}
+.inspector-meta span b {
+  color: var(--text-main);
+}
+.inspector-box {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-main);
+  max-height: 110px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+/* Gauges */
+.bar-label-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 2px;
+  color: var(--text-muted);
+}
+.val-mono {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-main);
+}
+.bar-track {
+  height: 6px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--primary);
+  width: 50%;
+  transition: width 0.1s linear;
+}
+
+/* Data Table */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.data-table tr {
+  border-bottom: 1px solid var(--border-dim);
+}
+.data-table tr:last-child {
+  border-bottom: none;
+}
+.data-table td {
+  padding: 5px 2px;
+  color: var(--text-main);
+}
+.data-table td.label {
+  color: var(--text-muted);
+}
+.data-table td.val {
+  text-align: right;
+  font-weight: 600;
+}
+
+/* Stat Display */
+.stat-box {
+  margin-bottom: 6px;
+}
+.stat-num {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.1;
+}
+.stat-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}

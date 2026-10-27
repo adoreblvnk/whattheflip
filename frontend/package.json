@@ -1,0 +1,15 @@
+{
+  "name": "whattheflip-dashboard",
+  "version": "1.0.0",
+  "description": "Technical Editorial Security Diagnostic Dashboard for whattheflip",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "vanjs-core": "^1.5.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
