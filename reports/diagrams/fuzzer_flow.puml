@@ -2,25 +2,30 @@
 !theme plain
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName Arial
-skinparam defaultFontSize 12
+skinparam defaultFontSize 11
 skinparam shadowing false
+skinparam ActivityBorderColor #1E293B
+skinparam ActivityBackgroundColor #F8FAFC
+skinparam ActivityDiamondBackgroundColor #FEF9C3
+skinparam ArrowColor #1E293B
 
 start
-:pick the bus and the fault;
-:arm the trigger;
+:arm fault trigger;
+:set status LED to yellow (150 ms);
 
-if (fault on uart?) then (yes)
-  :wait for a frame edge on probe 0;
-  :drive one bit period low, max 10 us;
-else (i2c)
-  :wait for the ack slot on probe 2;
-  :hold sda high for max 50 us, or stretch scl;
+if (target bus?) then (UART)
+  :sync to Start Bit on Probe 1;
+  :inject 10 µs bit flip on Probe 0;
+  :daphne detects framing/checksum error;
+  :daphne turns on GP3 LED, beeps buzzer;
+else (I2C)
+  :sync to SCL clock on Probe 3;
+  :inject 50 µs ACK-kill on Probe 2;
+  :daphne detects bus stall, turns on GP2 LED;
+  :daphne executes 9-clock recovery & beeps buzzer;
 endif
 
-if (a probe still driven after 100 us?) then (stuck)
-  :float all probes, raise contention;
-else (clean)
-  :log the error count, disarm;
-endif
+:status LED back to green;
+:dispatch alert to dashboard in < 200 ms;
 stop
 @enduml

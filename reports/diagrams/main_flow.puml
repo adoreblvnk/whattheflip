@@ -2,7 +2,7 @@
 !theme plain
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName Arial
-skinparam defaultFontSize 12
+skinparam defaultFontSize 11
 skinparam shadowing false
 skinparam ActivityBorderColor #1E293B
 skinparam ActivityBackgroundColor #F8FAFC
@@ -10,27 +10,37 @@ skinparam ActivityDiamondBackgroundColor #FEF9C3
 skinparam ArrowColor #1E293B
 
 start
-:power on, keep e-stop unpressed;
-:microSD mount, radio up, all probes high-Z;
-if (microSD or radio failed?) then (yes)
-  :blink red, stop here;
-  stop
-else (no)
-endif
+:power on, probes idle high-Z (50 ms);
+:initialize µT-Kernel 3.0 pools & queues;
 
-while (running clean?) is (yes)
-  :idle, probes high-Z;
-  if (command from dashboard?) then (sniff)
-    :capture frames, write pcap to microSD, stream numbers;
-  elseif (command from dashboard?) then (discover)
-    :sample bus edges, classify uart or i2c, map pins;
-  elseif (command from dashboard?) then (fuzz)
-    :arm trigger, inject one bounded glitch, watch error count;
-  else (none)
-  endif
-endwhile (estop pressed or a probe stuck low over 100 us)
-:float probes in 200 ns, red led, buzzer;
-:wait for user reset;
--> idle
+partition "concurrent tasks" {
+  fork
+    :TSK_SAFETY
+    e-stop monitor & status LED;
+  fork again
+    :TSK_DASHBOARD
+    SoftAP & 2 Hz web telemetry;
+  fork again
+    :TSK_DISCOVERY
+    bus classification & probe remap;
+  fork again
+    :TSK_SNIFFER
+    passive wired & wireless capture;
+  fork again
+    :TSK_FUZZER
+    synchronized bounded fault injection;
+  fork again
+    :TSK_STORAGE
+    PCAP 2.4 microSD writer;
+  end fork
+}
+
+if (e-stop pressed?) then (yes)
+  :float probes in < 200 ns;
+  :status LED red, latch abort state;
+  stop
+else (normal)
+  :system runs continuously;
+endif
 stop
 @enduml

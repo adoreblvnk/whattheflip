@@ -3,54 +3,66 @@
 left to right direction
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName Arial
-skinparam defaultFontSize 12
+skinparam defaultFontSize 11
 skinparam shadowing false
 skinparam roundcorner 6
 skinparam linetype ortho
 skinparam nodesep 14
-skinparam ranksep 80
+skinparam ranksep 60
 
 skinparam component {
     BorderColor #1E293B
     BackgroundColor #F8FAFC
     FontColor #0F172A
-    FontSize 12
+    FontSize 11
 }
 
 package "whattheflip" as TOOL #F0F9FF {
-    package "probes, GP4 to GP7" as PROBES #E0F2FE {
-        component "probe 0" as P0 #BAE6FD
-        component "probe 1" as P1 #BAE6FD
-        component "probe 2" as P2 #BAE6FD
-        component "probe 3" as P3 #BAE6FD
+    package "probes" as PROBES #E0F2FE {
+        component "probe 0 (GPIO4)" as P0 #BAE6FD
+        component "probe 1 (GPIO5)" as P1 #BAE6FD
+        component "probe 2 (GPIO6)" as P2 #BAE6FD
+        component "probe 3 (GPIO7)" as P3 #BAE6FD
         P0 -[hidden]down- P1
         P1 -[hidden]down- P2
         P2 -[hidden]down- P3
     }
-    component "onboard\nmicroSD, e-stop, neopixel, buzzer" as ONBOARD #E0F2FE
+    component "microSD (GPIO18..21)\ne-stop (GPIO9)\nRGB LED (GPIO8)" as ONBOARD #E0F2FE
 }
 
 package "breadboard" as BB #ECFDF5 {
     package "hestia" as VA #D1FAE5 {
-        component "GP0 uart tx" as A_PINS #A7F3D0
+        component "GP0 TX" as A_PINS #A7F3D0
     }
+
+    component "R1: 220 Ω" as R1 #FEF08A
+
     package "daphne" as VB #D1FAE5 {
-        component "GP1 uart rx, GP4 GP5 i2c master" as B_PINS #A7F3D0
+        component "GP1 RX" as B_RX #A7F3D0
+        component "I2C master" as B_I2C #A7F3D0
+        component "buzzer (GP18)\nLEDs (GP2, GP3)" as B_ACT #6EE7B7
+        B_RX -[hidden]down- B_I2C
+        B_I2C -[hidden]down- B_ACT
     }
-    component "i2c bus" as BUS #A7F3D0
-    component "GY-511" as IMU #6EE7B7
-    VA -[hidden]right- VB
-    A_PINS -right-> B_PINS : uart 115200
-    B_PINS -- BUS
+
+    component "I2C bus (Row 42/43)" as BUS #A7F3D0
+    component "GY-511" as IMU #34D399
+
+    A_PINS -right-> R1 : Row 10
+    R1 -right-> B_RX : Row 12
+    B_I2C -- BUS
     BUS -- IMU
 }
 
-PROBES -right-> BB : probe 0 to hestia tx row\nprobe 1 to daphne rx row\nprobes 2 and 3 to the i2c bus rows
+P1 -right-> A_PINS : clean sniff (Row 10)
+P0 -right-> B_RX : glitch inject (Row 12)
+P2 -right-> BUS : SDA / ACK-kill
+P3 -right-> BUS : SCL / clock-stretch
 
 package "iris" as WV #EFF6FF {
-    component "softap\n802.15.4" as RF #BFDBFE
+    component "SoftAP (Ch 6)\n802.15.4 (Ch 15)" as RF #BFDBFE
 }
 
-RF -- TOOL : 2.4 GHz
+RF -.- TOOL : 2.4 GHz
 RF -[hidden]down- BB
 @enduml

@@ -2,29 +2,31 @@
 !theme plain
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName Arial
-skinparam defaultFontSize 12
+skinparam defaultFontSize 11
 skinparam shadowing false
+skinparam ActivityBorderColor #1E293B
+skinparam ActivityBackgroundColor #F8FAFC
+skinparam ActivityDiamondBackgroundColor #FEF9C3
+skinparam ArrowColor #1E293B
 
 start
-:listen on the probes, all pins high-Z;
-:RMT RX catches every edge, dma into a ring buffer;
-:cluster the edge timing into pulse widths;
+:listen on probes, pins high-Z;
 
-if (rhythm matches uart?) then (yes)
-  :smallest pulse width is one bit;
-  :baud lands in 9600 to 115200, within 2 percent;
-elseif (rhythm matches i2c?) then (yes)
-  :find start and stop pairs in the stream;
-  :clock runs at 100 or 400 kHz;
-else (still unclear)
-  :keep listening;
-  stop
-endif
+repeat
+  :sample edge rhythms in 50 ms burst;
 
-if (locked within 2 s?) then (yes)
-  :map the pins, tell the dashboard;
-else (no)
-  :tell the dashboard, retry up to 3 times;
-endif
+  if (matches UART 8.68 µs ±2%?) then (yes)
+    :16 valid edges -> lock UART 115200;
+    :remap Probe 1 to UART decoder in < 10 ms;
+  elseif (matches I2C 1.25 µs ±2%?) then (yes)
+    :16 valid edges -> lock I2C 400 kHz;
+    :remap Probes 2 & 3 to I2C decoder in < 10 ms;
+  else (noise)
+    :reset rhythm counter;
+  endif
+repeat while (both buses locked?) is (no)
+
+:report locked status to dashboard;
+:hand off pins to sniffer and fuzzer;
 stop
 @enduml

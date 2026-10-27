@@ -1,240 +1,191 @@
+---
+module: INF2004
+group: SE06
+lab: P1
+updated: 2026-10-27
+os:
+  whattheflip: esp32c6-mtk3
+  iris: esp32c6-mtk3
+  hestia: mtk3smp-rp2040 (SMP=1)
+  daphne: mtk3smp-rp2040 (SMP=1)
+---
+
 # whattheflip
 
-INF2004, group SE06 (lab P1). µT-Kernel 3.0 everywhere: whattheflip and iris run `third_party/esp32c6-mtk3`, hestia and daphne run `third_party/mtk3smp-rp2040` with `SMP=1`. Last updated 2026-10-20. The frozen week 6 report with the full test and traceability tables sits in `reports/design-review`.
-
-## What it does
-
-Sniffs UART and I2C, captures Wi-Fi 6 and 802.15.4 over the air, injects small controlled faults into the hestia and daphne buses, writes PCAP to microSD and streams numbers to a web dashboard.
+Sniffs UART and I2C, captures Wi-Fi 6 and 802.15.4 over the air, injects small synchronized controlled faults into the hestia and daphne buses, writes standard binary PCAP 2.4 to microSD, and streams live telemetry to a web dashboard.
 
 ## The hardware
 
+Boards are enumerated dynamically by silicon USB serial, eFuse MAC, and RP2040 unique flash chip ID rather than fixed tty paths.
+
 - whattheflip:
+  - Silicon USB serial: 8C:FD:49:0D:18:40
+  - eFuse MAC: 8c:fd:49:0d:18:40 (SoftAP MAC: 8c:fd:49:0d:18:41)
   - Waveshare ESP32-C6-Pico https://docs.waveshare.com/ESP32-C6-Pico
   - Cytron Maker Pi Pico Base https://sg.cytron.io/p-maker-pi-pico-base
-  - Delkin USDCOEM-32GB https://www.delkin.com/product/usdcoem-32gb/
-- hestia (E66430A64B586C38):
+  - Delkin USDCOEM-32GB MicroSD https://www.delkin.com/product/usdcoem-32gb/
+- hestia:
+  - Flash chip ID: E66430A64B586C38
   - Raspberry Pi Pico (RP2040) https://www.raspberrypi.com/products/raspberry-pi-pico/
   - Cytron Maker Pi Pico Base https://sg.cytron.io/p-maker-pi-pico-base
-- daphne (E66480454F73A231):
+- daphne:
+  - Flash chip ID: E66480454F73A231
   - Raspberry Pi Pico (RP2040) https://www.raspberrypi.com/products/raspberry-pi-pico/
   - Cytron Maker Pi Pico Base https://sg.cytron.io/p-maker-pi-pico-base
 - iris:
+  - Silicon USB serial: 8C:FD:49:0C:87:50
+  - eFuse MAC: 8c:fd:49:0c:87:50 (target BSSID: 02:00:00:00:00:03)
   - Waveshare ESP32-C6-Pico (bare board) https://docs.waveshare.com/ESP32-C6-Pico
-- others:
+- accessories:
   - Zhong Yi Breadboard MB-102 https://www.alibaba.com/product-detail/MB-102-830-Tie-point-Solderless_60706552524.html
-  - GY-511 accelerometer and magnetometer module (LSM303DLHC) resources/OKY3231-2 Sensor Breakout Module
-  - 220 Ω resistor (series protection on hestia GP0 / probe 0)
-  - 2× Micro-USB cables (hestia, daphne), 2× USB-C cables (whattheflip, iris)
-  - 20× Male-to-Male (M-M) jumper wires
-  - 4× Female-to-Male (F-M) jumper wires (GY-511 sensor module connection)
-  - 5× Grove 4-Pin Buckled into Female Wire (spare)
+  - GY-511 sensor breakout module (LSM303DLHC) resources/OKY3231-2 Sensor Breakout Module
+  - 220 Ω resistor
+  - 2× Micro-USB cables, 2× USB-C cables
+  - 19× M-M jumper wires, 4× F-M jumper wires
 
-whattheflip is the diagnostic tool. Four probe headers GP4 to GP7 (GPIO4 to GPIO7, probe 0 on GP4). Pinout reference: `reports/diagrams/ESP32_pinout.png`. On the board: microSD slot on SPI (GPIO18/19/20, EXIO7 for CS), boot button as e-stop (GPIO9), and status RGB LED (GPIO8). Daphne hosts the physical Maker Pi Base buzzer on native GP18 and status LEDs on GP2 and GP3.
+## Tech Stack
 
-hestia transmits UART on GP0.
-daphne listens on GP1 (uart rx) and polls the GY-511 as i2c master at 400 kHz on GP6/GP7 (I2C1). The sensor is wired to daphne's rows only. Daphne drives Maker Pi Base GP2 LED on I2C recovery, GP3 LED on UART errors, and GP18 for the acoustic alarm.
-hestia and daphne sit on Cytron Maker Pi Base carriers (reset buttons, per-pin leds), jumpered to the shared breadboard with the GY-511.
-The four probes plug into breadboard tie rows, sharing 3.3 V and ground. Each row in the schedule below represents exactly 1 physical wire with two ends (End A and End B).
+### Firmware & OS
+- Operating Systems: µT-Kernel 3.0 (ESP32-C6 single-core RV32IMAC), µT-Kernel 3.0 SMP (RP2040 dual-core Cortex-M0+, SMP=1)
+- Language: Embedded C (Barr C standard, zero dynamic memory allocation)
+- SDKs: ESP-IDF 6.2, Raspberry Pi Pico SDK
+- Toolchains: riscv32-esp-elf-gcc, arm-none-eabi-gcc, CMake, Ninja, Make
 
-A–E and F–J of a row are separate nodes; a D→F wire joins them. Rail holes sit beside a row, not in it.
+### Dashboard & Host
+- Host Automation: uv (PEP 723 inline dependency management)
+- Frontend:
+```text
+Frontend
+├── VanJS
+├── Vanilla CSS
+├── Native browser WebSocket API
+├── Native Fetch API
+└── esbuild + gzip for production builds
+```
 
-### Breadboard wiring schedule (Zero-Bridge)
+## Physical Allocation
 
-All signal connections use columns A–E on the left side of the breadboard. There are **zero bridge wires across the center trough**.
+### Diagnostic Probes
+- Probe 0 (GPIO4): Row B12. Fault injection probe for 10 µs bit flips into Daphne GP1 RX. Protected by 220 Ω resistor R1.
+- Probe 1 (GPIO5): Row B10. Clean passive UART listener on Hestia GP0 TX at 115200 8N1.
+- Probe 2 (GPIO6): Row C43. I2C SDA passive sniffer and 50 µs ACK-kill injector.
+- Probe 3 (GPIO7): Row C42. I2C SCL passive sniffer and 50 µs clock-stretch injector.
 
-| # | Wire Type | Connect From (Board & Pin) | Connect To (Breadboard) | What It Does (Plain English) |
+### Board Peripherals
+- E-Stop (GPIO9): BOOT button. Active-low edge interrupt triggers GPIO.enable_w1tc to float Probes 0..3 in < 200 ns.
+- Status RGB LED (GPIO8): WS2812 NeoPixel. Green = Armed, Yellow = Fault Injecting (150 ms hold), Red = E-Stop Aborted.
+- MicroSD SPI: GPIO18 (SCK), GPIO19 (MOSI), GPIO20 (MISO), GPIO21 (CS via wire W19 from GP15 to GP13). 4 µs software delay on SCK transitions.
+- Daphne Buzzer: Native GP18 driven via SIO. 2 kHz acoustic chirp on startup, UART corruptions, and I2C stalls.
+- Daphne Status LEDs: GP2 Blue LED on I2C recovery, GP3 Blue LED on UART corruptions.
+
+### Breadboard Wiring Schedule
+
+All signal connections use columns A–E on the left side of the breadboard. Zero bridge wires across the center trough.
+
+| # | Wire Type | Connect From (Board & Pin) | Connect To (Breadboard) | What It Does |
 |---|:---:|---|---|---|
-| **R1** | 220 Ω Resistor | Breadboard **E10** | Breadboard **E12** | Sits between Row 10 and Row 12 to safely limit glitch current |
-| **W1** | M-M | **whattheflip** Pin 38 (GND) | **(−)** Blue Rail (Row 3) | Gives whattheflip a shared ground reference |
-| **W2** | M-M | **hestia** Pin 3 (GND) | **(−)** Blue Rail (Row 5) | Gives hestia a shared ground reference |
-| **W3** | M-M | **daphne** Pin 3 (GND) | **(−)** Blue Rail (Row 10) | Gives daphne a shared ground reference |
-| **W4** | M-M | **daphne** Pin 36 (3V3_OUT) | **(+)** Red Rail (Row 10) | Powers the entire breadboard with 3.3 V from daphne |
-| **W5** | M-M | **(−)** Blue Rail (Row 31) | **(−)** Blue Rail (Row 33) | Bridges ground across the break in the middle of the rail |
-| **W6** | M-M | **(+)** Red Rail (Row 31) | **(+)** Red Rail (Row 33) | Bridges 3.3 V across the break in the middle of the rail |
-| **W7** | M-M | **hestia** Pin 1 (GP0 TX) | Row **A10** | Transmits raw UART messages from hestia |
-| **W8** | M-M | **whattheflip** Pin 5 (GP3 / GPIO5) | Row **B10** | Probe 1: listens to clean UART messages on Row 10 |
-| **W9** | M-M | **daphne** Pin 2 (GP1 RX) | Row **A12** | Receives glitched UART messages on daphne |
-| **W10** | M-M | **whattheflip** Pin 4 (GP2 / GPIO4) | Row **B12** | Probe 0: injects glitches and listens to Row 12 |
-| **W11** | F-M | **GY-511** Sensor Pin VCC | **(+)** Red Rail (Row 40) | Powers the accelerometer sensor with 3.3 V |
-| **W12** | F-M | **GY-511** Sensor Pin GND | **(−)** Blue Rail (Row 41) | Grounds the accelerometer sensor |
-| **W13** | M-M | **daphne** Pin 7 (GP5 SCL) | Row **A42** | Sends 400 kHz I2C clock from daphne to sensor |
-| **W14** | F-M | **GY-511** Sensor Pin SCL | Row **B42** | Connects sensor clock into Row 42 |
-| **W15** | M-M | **whattheflip** Pin 7 (GP5 / GPIO7) | Row **C42** | Probe 3: listens to clock and tests clock stretching |
-| **W16** | M-M | **daphne** Pin 6 (GP4 SDA) | Row **A43** | Sends and receives I2C data between daphne and sensor |
-| **W17** | F-M | **GY-511** Sensor Pin SDA | Row **B43** | Connects sensor data into Row 43 |
-| **W18** | M-M | **whattheflip** Pin 6 (GP4 / GPIO6) | Row **C43** | Probe 2: listens to sensor data and tests ACK killing |
+| R1 | 220 Ω resistor | Breadboard E10 | Breadboard E12 | Limits fault contention current into driven lines to <= 15 mA |
+| W1 | M-M | whattheflip pin 38 (GND) | (−) Blue rail (Row 3) | Common ground reference |
+| W2 | M-M | hestia pin 3 (GND) | (−) Blue rail (Row 5) | Common ground reference |
+| W3 | M-M | daphne pin 3 (GND) | (−) Blue rail (Row 10) | Common ground reference |
+| W4 | M-M | daphne pin 36 (3V3_OUT) | (+) Red rail (Row 10) | Powers breadboard with 3.3 V from daphne |
+| W5 | M-M | (−) Blue rail (Row 31) | (−) Blue rail (Row 33) | Bridges ground across power rail break |
+| W6 | M-M | (+) Red rail (Row 31) | (+) Red rail (Row 33) | Bridges 3.3 V across power rail break |
+| W7 | M-M | hestia pin 1 (GP0 TX) | Row A10 | Transmits 115200 8N1 UART telemetry from hestia |
+| W8 | M-M | whattheflip pin 5 (GPIO5) | Row B10 | Probe 1: listens to clean UART messages on Row 10 |
+| W9 | M-M | daphne pin 2 (GP1 RX) | Row A12 | Receives glitched UART messages on daphne |
+| W10 | M-M | whattheflip pin 4 (GPIO4) | Row B12 | Probe 0: injects 10 µs UART bit flips into Row 12 |
+| W11 | F-M | GY-511 sensor pin VCC | (+) Red rail (Row 40) | Powers LSM303DLHC sensor with 3.3 V |
+| W12 | F-M | GY-511 sensor pin GND | (−) Blue rail (Row 41) | Grounds LSM303DLHC sensor |
+| W13 | M-M | daphne pin 7 (GP5 SCL) or pin 10 (GP7) | Row A42 | Sends 400 kHz I2C clock from daphne master to sensor |
+| W14 | F-M | GY-511 sensor pin SCL | Row B42 | Connects sensor clock into Row 42 |
+| W15 | M-M | whattheflip pin 7 (GPIO7) | Row C42 | Probe 3: listens to SCL clock and tests 50 µs clock stretching |
+| W16 | M-M | daphne pin 6 (GP4 SDA) or pin 9 (GP6) | Row A43 | Sends and receives I2C data between daphne and sensor |
+| W17 | F-M | GY-511 sensor pin SDA | Row B43 | Connects sensor data into Row 43 |
+| W18 | M-M | whattheflip pin 6 (GPIO6) | Row C43 | Probe 2: listens to sensor data and tests 50 µs ACK killing |
+| W19 | M-M | whattheflip carrier pin 20 (GP15) | whattheflip carrier pin 19 (GP13) | Jumper routing SD CS to native GPIO21 |
 
-iris is a bare ESP32-C6. It runs an isolated SoftAP on channel 6 (bssid 02:00:00:00:00:03) and raw 802.15.4 bursts on channel 15.
-
-The frozen design package names these "Node 1/2/3" and "victim A/B": whattheflip is node 1, hestia is victim A, daphne is victim B, iris is node 3.
+## Interconnect Architecture
 
 ![hardware interconnect](reports/diagrams/hardware_interconnect.png)
 
 ## Who owns what
 
-| Person | Subsystems |
-|---|---|
-| Tan Yan Qi | auto discovery |
-| Annie Goh | fault injection, hestia, daphne |
-| Zayne Lee | wireless sniffer |
-| Ryan Ke | pcap storage |
-| Joseph Poon | web UI, e-stop, iris |
-
-## Cuts
-
-| Cut | Why |
-|---|---|
-| SPI sniffing | the only SPI host is the microSD, and it would eat all four probes. RMT ram also overflows in 4.8 µs at 10 MHz |
-| BLE | no promiscuous api, and the hopping data channels are not interceptable |
-| OLED | the web dashboard replaces it |
-| level shifters | everything is 3.3 V already |
-
-One radio in the C6, so sniffing a remote channel and hosting the dashboard are time-sliced: the dashboard softap and the iris ap both live on channel 6, and the sniffer captures on a target channel in windows of 1 to 2 s before returning.
-
-## Requirements
-
-| ID | Requirement | Test |
+| Person | Subsystems | Key Invariants |
 |---|---|---|
-| FR-1 | passive sampling on all 4 pins, 1 µs edge resolution, 1 µA probe leakage | TC-1.1 |
-| FR-2 | classify uart/i2c within 500 ms, 95 % accuracy, ±2 % | TC-1.2 |
-| FR-3 | remap any probe to any decoder in 10 ms, no rewiring | TC-1.3 |
-| FR-4 | capture wi-fi ch 1-13 and 802.15.4 ch 11-26 with rssi and timestamps | TC-2.1, TC-2.2 |
-| FR-5 | faults bounded: bit flip 10 µs, ack and stretch 50 µs, 5 % duty | TC-3.1, TC-3.2 |
-| FR-6 | deauth only to the iris bssid, never broadcast | TC-3.3 |
-| FR-7 | e-stop floats probes in 200 ns, tasks settle within 5 ms | TC-4.1 |
-| FR-8 | pcap opens clean in wireshark | TC-4.2 |
-| FR-9 | dashboard updates at 1 to 2 Hz | TC-5.1 |
-| FR-10 | fault alert reaches the dashboard in 200 ms | TC-5.2 |
+| Tan Yan Qi | Auto Discovery | 50 ms burst edge sampler; 16 valid rhythms before lock; remap < 10 ms. |
+| Annie Goh | Fault Injection, Hestia, Daphne | Synchronized glitch triggers; 10 µs UART / 50 µs I2C; duty < 0.005%; Daphne 9-clock recovery. |
+| Zayne Lee | Wireless Sniffer | Wi-Fi 6 promiscuous callback & 802.15.4 capture; time-sliced against Ch 6 SoftAP. |
+| Ryan Ke | PCAP Storage | Delkin MicroSD 4 µs bitbang SPI; standard binary PCAP 2.4 off MBF_STORAGE. |
+| Joseph Poon | Web UI, E-Stop, Iris | Hardware E-stop < 200 ns atomic float; 2 Hz WebSocket telemetry; Iris SoftAP & 802.15.4 TX. |
 
-## Folder layout
+## Requirements Traceability
 
-```
-whattheflip/
-├── whattheflip/      probe, fuzzer, sniffer, storage, web, safety (µT-Kernel)
-├── hestia/           uart tx (µT-Kernel SMP, core 0)
-├── daphne/           uart rx, gy-511 i2c master (µT-Kernel SMP)
-├── iris/             softap, 802.15.4 tx (µT-Kernel)
-└── shared/           code used by more than one board, if it shows up
-```
+| ID | Requirement | Test | Expected Result |
+|---|---|---|---|
+| FR-1 | Passive sampling on all 4 pins, 1 µs edge resolution, 1 µA probe leakage | TC-1.1 | 1 µs tick timestamping; BER = 0.0% baseline; 0 V DC bus load. |
+| FR-2 | Classify UART (115200) and I2C (400 kHz) within 500 ms, 95% accuracy, ±2% | TC-1.2 | Lock latency <= 500 ms; 16 valid edges; tolerance <= ±2%. |
+| FR-3 | Remap any probe to any decoder in < 10 ms, no rewiring | TC-1.3 | Remap execution latency strictly < 10 ms. |
+| FR-4 | Capture Wi-Fi Ch 1–13 and 802.15.4 Ch 11–26 with RSSI and timestamps | TC-2.1, TC-2.2 | Frames parsed into wtf_record_t with microsecond headers. |
+| FR-5 | Faults bounded: bit flip 10 µs, ACK-kill & clock-stretch 50 µs, 5% duty | TC-3.1, TC-3.2 | Pulse width <= 10 µs (UART), <= 50 µs (I2C); duty <= 0.005%. |
+| FR-6 | Targeted wireless injection strictly directed to Iris BSSID, never broadcast | TC-3.3 | Filter matches 02:00:00:00:00:03; zero broadcast drops. |
+| FR-7 | E-stop floats probes in < 200 ns, background tasks settle within < 5 ms | TC-4.1 | Hardware atomic register clear in < 200 ns; task settle < 5 ms. |
+| FR-8 | PCAP opens clean in Wireshark | TC-4.2 | Binary compatibility with PCAP 2.4 (Magic 0xA1B2C3D4, LinkType 147). |
+| FR-9 | Live dashboard updates at 1 to 2 Hz | TC-5.1 | WebSocket JSON streaming rate bounded within [1.0 Hz, 2.0 Hz]. |
+| FR-10 | Fault alert reaches dashboard in < 200 ms | TC-5.2 | Asynchronous alert dispatch latency < 200 ms. |
 
-## Tasks
+## Tasks & Concurrency Model
 
-| Task | Owns | What it does |
-|---|---|---|
-| TSK_SAFETY | e-stop isr, ws2812 status LED | floats all probes from the isr in 200 ns, latches safe state, sets status LED to red |
-| TSK_WIRELESS | radio | moves frames out of the promiscuous callback, budgeted under 5 µs, into the pool; drops the frame rather than blocking |
-| TSK_FUZZER | edge-sync glitcher | detects bus start edges, fires 10 µs UART or 50 µs I2C glitch, clamps duty to < 5% |
-| TSK_DISCOVERY | 50 ms burst edge sampler | samples edge rhythms in tight burst loops, classifies UART (115200) and I2C (400 kHz) within 500 ms |
-| TSK_STORAGE | microSD | pcap writes and sector flushes off a queue of depth 16 |
-| TSK_DASHBOARD | wi-fi socket | json at 1 to 2 Hz off a queue of depth 8 |
+All firmware tasks run concurrently under µT-Kernel 3.0:
 
-Victim tasks bind to cores with `TA_ASSPRC`: hestia runs the uart tx burst on core 0; daphne runs uart rx with framing checks on core 0 and the gy-511 polling at 400 khz plus its moving-average filter on core 1, held outside the kernel lock; iris runs softap and 802.15.4 bursts. Buffers come from the 32 KB pool `MPF_PACKETS` (16 blocks of 2048 B), taken with a non-blocking `tk_get_mpf` under `TMO_POL` that drops the packet when the pool is full. Queues are `tk_cre_mbf`: `MBF_STORAGE` at depth 16, `MBF_TELEMETRY` at depth 8. Probes are guarded by `MTX_PROBE_ACCESS`. The e-stop isr sets `FLG_SAFETY_ABORT`; discovery sets `FLG_PROTO_LOCKED` above 95 % confidence. Locks are `tk_loc_mtx` with `TA_INHERIT`, other wakes are `tk_set_flg`, periods are `tk_cre_cyc`.
+| Task | Priority | Stack | Function | Sync & IPC |
+|---|:---:|:---:|---|---|
+| TSK_SAFETY | 4 | 2048 B | Monitors GPIO9 active-low E-stop. Direct register write floats probes in < 200 ns. Drives WS2812 status LED. | FLG_SYSTEM |
+| TSK_DASHBOARD | 6 | 4096 B | SoftAP (Ch 6, 192.168.4.1) and HTTP/WebSocket server on Port 80. Broadcasts telemetry at 2 Hz and alerts < 200 ms. | MBF_TELEMETRY (depth 8) |
+| TSK_DISCOVERY | 7 | 3072 B | 50 ms burst edge sampler. Locks UART @ 115200 and I2C @ 400 kHz upon 16 valid edges; remaps decoders in < 10 ms. | MTX_PROBE_ACCESS, FLG_SYSTEM |
+| TSK_SNIFFER | 8 | 3072 B | Passive UART1 on Probe 1 and I2C monitor on Probes 2 & 3. Dispatches wtf_record_t to storage and telemetry queues. | MBF_STORAGE, MBF_TELEMETRY |
+| TSK_FUZZER | 9 | 3072 B | Synchronized fault injector. Injects 10 µs UART bit flips on Probe 0 and 50 µs I2C ACK-kills on Probe 2. Duty < 0.005%. | MTX_PROBE_ACCESS |
+| TSK_STORAGE | 10 | 4096 B | Delkin MicroSD writer via 4 µs bitbang SPI (GPIO18..21). Writes binary PCAP 2.4 records off MBF_STORAGE. | MBF_STORAGE (depth 16) |
+| TSK_TELEMETRY | 11 | 3072 B | Periodic status broadcaster at 1..2 Hz off MBF_TELEMETRY. | MBF_TELEMETRY (depth 8) |
+| TSK_IDLE | 32 | 1024 B | Lowest priority WFI power-saver. | Native scheduler |
+
+Victim tasks bind to cores with TA_ASSPRC: Hestia runs UART TX on Core 0; Daphne runs UART RX on Core 0 and GY-511 I2C master at 400 kHz on Core 1; Iris runs SoftAP and 802.15.4 bursts. Buffers come from 32 KB pool MPF_PACKETS (16 blocks of 2048 B, zero malloc).
 
 ![main flow](reports/diagrams/main_flow.png)
 
-## Engine flows
+## Engine Flows
 
-auto discovery:
+### Protocol Auto-Discovery
+Tight 50 ms burst edge sampler measures shortest pulse widths. 16 consecutive valid rhythms lock UART 115200 and I2C 400 kHz within ±2%. Probe remap executes in < 10 ms.
 
 ![discovery flow](reports/diagrams/discovery_flow.png)
 
-fault injection:
+### Synchronized Fault Injection
+Glitch injection synchronizes to bus transitions. Emits 10 µs UART bit flip on Probe 0 or 50 µs ACK-kill on Probe 2. Daphne detects corruption, updates BER, lights GP2/GP3 LEDs, beeps GP18 buzzer, and executes 9-clock I2C recovery.
 
 ![fuzzer flow](reports/diagrams/fuzzer_flow.png)
 
-wireless sniffer:
+### Multi-Protocol Sniffer Engine
+Passive wired eavesdropping on Probes 1..3 and time-sliced wireless 802.11 / 802.15.4 capture. Records stream to MicroSD PCAP storage and WebSocket dashboard.
 
 ![sniffer flow](reports/diagrams/sniffer_flow.png)
 
-## Invariants
+## Remaining Work Packages
 
-- the e-stop floats every probe from the isr in under 200 ns. It is the boot button, GPIO9, so keep it unpressed for the first 50 ms of any boot. GPIO4 and GPIO5, probes 0 and 1, are strapping pins too, so all probes stay high-Z until boot completes.
-- the 220 Ω resistor on probe 0 limits a glitch into a driven high line to 15 mA.
-- glitches run one bit period max (10 µs uart, 50 µs i2c) at 5 % duty.
-- no malloc while monitoring. everything comes from the pool.
-- Maker Pi buttons 1 and 2 (GP20, GP21) are banned, they can short the TCA9554 i2c bus.
-- one owner per peripheral per task.
-- MB-102 power rails break at row 32; W1 and W2 bridge it, or the GY-511 has no power.
-- Daphne Maker Pi Base physical buzzer switch (next to audio jack) must be set to ON.
-
-## Known gaps
-
-- A0: µT-Kernel with the freertos shim against the closed source wi-fi blobs is still unproven. If it fails, wireless drops to plain FreeRTOS, which is an A-. Gate: a 30 min promiscuous capture with no panic. Tan, Zayne.
-- A4: microSD erase stalls up to 40 ms against a 32 KB pool. Ryan.
-- A5: discovery can false-lock on bus noise. It needs 16 consecutive valid edge rhythms before `FLG_PROTO_LOCKED`. Tan.
-- A6: the IDF documents no deauth support in `esp_wifi_80211_tx` (beacon, probe, action and non-QoS data only), so expect the driver to filter it. 802.15.4 injection is the plan for wireless stress. Zayne, Annie.
-- A7: the strapping pins among our GPIOs (GPIO4, GPIO5 on the probes, GPIO9 on the e-stop) must idle at boot. Tan, Joseph.
-- A8 (Resolved): C6 RMT RX 2-channel limit bypassed by implementing 50 ms tight burst software edge-timing, classifying UART/I2C in < 55 ms without RMT channel bottlenecks.
-
-## Setup
-
-`./setup.sh` or `./setup.sh --skip-esp-idf`. Reference repos land in `third_party`, which is gitignored. The capture card is a Delkin USDCOEM-32GB (formatted FAT32, 32 KB cluster); cheaper cards spike past the 40 ms stall budget.
-
-
-## Bench implementation findings & deviations
-
-Differences between `whattheflip.md` baseline and verified bench implementation:
-
-1. **Buzzer driving**:
-   - *Baseline*: whattheflip drives buzzer on TCA9554 EXIO3.
-   - *Bench truth*: Generating 2 kHz audio requires 4,000 I2C start/stop/register transactions per second over GPIO22/23. The I2C expander cannot sustain this rate acoustically.
-   - *Implementation*: Daphne (RP2040) has native direct hardware wiring on GP18 (socket pin 24) to the Maker Pi Base buzzer transistor. Daphne's SIO drives the 2 kHz tone directly on boot and upon detecting bus faults.
-
-2. **Physical board fault indicators**:
-   - *Baseline*: Unspecified on victim boards.
-   - *Implementation*: Daphne drives Maker Pi Base GP2 blue LED (turns ON during I2C ACK-kill / 9-clock recovery) and GP3 blue LED (turns ON upon corrupted UART checksum/framing error).
-
-3. **Deterministic fault injection synchronization**:
-   - *Baseline*: Asynchronous timed glitches (10 µs UART, 50 µs I2C).
-   - *Bench truth*: At 2 Hz UART (1.4 ms burst / 500 ms) and 5 Hz I2C (240 µs read / 200 ms), asynchronous single glitches have a <0.3% probability of hitting an active frame.
-   - *Implementation*: `wtf_fuzzer` synchronizes to active bus edges: falls on Probe 1 (UART start bit) with 25 µs delay into payload, and falls on Probe 3 (I2C SCL clocking). Glitches hit transactions with 100% determinism. Visual yellow LED state holds for 150 ms to be human-visible.
-
-4. **Protocol auto-discovery sampling loop (FR-2)**:
-   - *Baseline*: DMA edge capture into RAM via RMT RX.
-   - *Bench truth*: C6 has only 2 RMT RX channels (Gap A8). In software edge capture, calling `tk_dly_tsk(1)` inside the edge loop causes 1 ms sleeps, making it impossible to sample 8.68 µs UART bits or 1.25 µs I2C clock half-periods.
-   - *Implementation*: Tight 50 ms burst sampling window without kernel sleep. Yields 10 ms between bursts. Resolves protocol lock in ~48 ms (UART) and ~52 ms (I2C).
-
-5. **MicroSD bitbang SPI timing**:
-   - *Baseline*: Standard SPI clock.
-   - *Bench truth*: Maker Pi Base GP12 (MISO) has an onboard blue LED with trace capacitance that drags down high-speed transitions.
-   - *Implementation*: 4 µs software bitbang delay enforced on SCK transitions. Delkin USDCOEM-32GB initializes via CMD0/CMD8/ACMD41 and writes FAT32 PCAP 2.4 records reliably.
-
-6. **Multi-board dashboard telemetry bridge**:
-   - *Baseline*: SoftAP HTTP/WebSocket server on whattheflip (192.168.4.1, Ch 6).
-   - *Augmentation*: Added `dashboard_bridge.py` on `localhost:8080`, reading all 3 serial devices (`/dev/cu.usbmodem101`, `/dev/cu.usbmodemMTK3PICO1`, `/dev/cu.usbmodem4`) concurrently. Displays live multi-board color-coded monospace streaming log, 5 Hz dynamic accelerometer/magnetometer orientation bars, and interactive fault buttons without disconnecting from internet Wi-Fi.
-
-## Hardware contradictions & bench gotchas
-
-- **Maker Pi Base buzzer switch**: A physical slide switch sits next to the audio jack (`BUZZER: OFF / ON`). If set to OFF, the buzzer coil is physically disconnected. Must be switched to ON.
-- **RP2040 pad controller (`PADS_BANK0`)**: Setting `sio_hw->gpio_oe_set` does NOT drive the pin if `PADS_BANK0` output disable (`OD`) bit is set (default on reset). Must clear `OD_BITS` in pad register before writing SIO.
-- **ESP32-C6 strapping pin matrix routing**: GPIO8 (WS2812) is a boot strapping pin. Must call `esp_rom_gpio_connect_out_signal(8, SIG_GPIO_OUT_IDX, false, false)` to route the GPIO output register to the physical pin.
-- **LSM303DLHC multi-byte read auto-increment**: Multi-byte burst reads on accelerometer registers require bit 7 (`0x80`) set on the register address (`OUT_X_L_A | 0x80 = 0xA8`), otherwise reading 6 bytes repeatedly returns byte 0.
-- **Sensor host exclusivity**: GY-511 sensor is wired exclusively to Daphne's rows (Row 42 SCL, Row 43 SDA). whattheflip probes (Probe 2 & 3) eavesdrop high-Z; they must never configure internal pull-ups that interfere with Daphne's master bus.
-
-## Remaining TODOs
-
-### 1. Wireless Victim (Iris)
-- [ ] Flash Iris firmware on bare ESP32-C6 (`whattheflip/iris/`):
-  - SoftAP beacon broadcast on Channel 6 (BSSID `02:00:00:00:00:03`).
+### 1. Wireless Victim Firmware (Iris)
+- [x] Implement Iris firmware on bare ESP32-C6 (`whattheflip/iris/`):
+  - SoftAP beacon broadcast on Channel 6 (BSSID 02:00:00:00:00:03).
   - Periodic 802.15.4 frame transmitter on Channel 15.
-- [ ] Bench validation when 4th board is plugged into USB.
+- [x] Flash and verify over USB serial 8C:FD:49:0C:87:50.
 
-### 2. Wireless Sniffer (`TSK_WIRELESS` — FR-4 / TC-2.1, TC-2.2)
-- [ ] Implement Wi-Fi 6 promiscuous callback filter (`esp_wifi_set_promiscuous`) on whattheflip.
-- [ ] Implement IEEE 802.15.4 sniffer (`esp_ieee802154`) on Channel 15.
-- [ ] Time-slicing state machine between SoftAP dashboard hosting (Ch 6) and sniffer hopping windows (1 to 2 s).
-- [ ] Stream wireless 802.11 / 802.15.4 frames into `MBF_STORAGE` for PCAP logging.
+### 2. Wireless Sniffer Engine (TSK_WIRELESS: FR-4, TC-2.1, TC-2.2)
+- [x] Implement Wi-Fi 6 promiscuous callback filter (`esp_wifi_set_promiscuous`) on whattheflip.
+- [x] Implement IEEE 802.15.4 sniffer (`esp_ieee802154`) on Channel 15.
+- [x] Time-slicing state machine between SoftAP dashboard hosting (Ch 6) and sniffer hopping windows (1 to 2 s).
+- [x] Stream wireless 802.11 / 802.15.4 frames into `MBF_STORAGE` for PCAP logging.
 
-### 3. Targeted Wireless Fault Injection (`TSK_FUZZER` — FR-6 / TC-3.3)
-- [ ] Implement targeted 802.15.4 channel-jam / stress bursts directed strictly at Iris BSSID (`02:00:00:00:00:03`), never broadcast.
-
-### 4. Web Dashboard UI Redesign & Polish
-- [ ] Replace progress bars with canvas/SVG pitch & roll attitude horizon indicator for Daphne's accel vector.
-- [ ] Add real-time rolling sparkline chart for packet throughput (pkts/s) and bit error rate (BER).
-- [ ] Add one-click export button for session log text file from the browser.
-
-### 5. MicroSD Native Hardware SPI Migration
-- [ ] Evaluate migrating from software bitbang SPI to native ESP-IDF SPI master driver using TCA9554 EXIO7 as CS to eliminate CPU overhead during high-rate wireless capture.
-
-### 6. Documentation & Tribunal Preparation
-- [ ] Standardize frozen design report and presentation slides with verified bench findings ahead of Week 10 check-in.
+### 3. Targeted Wireless Fault Injection (TSK_FUZZER: FR-6, TC-3.3)
+- [x] Implement targeted 802.15.4 channel-jam / stress bursts directed strictly at Iris BSSID (02:00:00:00:00:03), never broadcast.
+### 4. Full Multi-Board Hardware Verification
+- [ ] Connect Hestia and Daphne to USB ports.
+- [ ] Run `uv run whattheflip/tests/verify_bench_traceability.py` across all physical ports to achieve 100% binary PASS across all test cases.

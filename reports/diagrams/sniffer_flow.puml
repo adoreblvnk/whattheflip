@@ -2,24 +2,28 @@
 !theme plain
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName Arial
-skinparam defaultFontSize 12
+skinparam defaultFontSize 11
 skinparam shadowing false
+skinparam ActivityBorderColor #1E293B
+skinparam ActivityBackgroundColor #F8FAFC
+skinparam ActivityDiamondBackgroundColor #FEF9C3
+skinparam ArrowColor #1E293B
 
 start
-:pick the channel (wi-fi 1-13 or 802.15.4 11-26);
-:radio goes promiscuous;
-:the baseband hands raw frames to the isr;
-:copy each frame into the pool;
+:listen wired (probes 1..3) and wireless (time-sliced 802.11 / 802.15.4);
+:acquire buffer from 32 KB pool (non-blocking);
 
-while (capture running?) is (yes)
-  if (pool above 85 percent?) then (yes)
-    :drop beacons first, keep management frames;
-    :count every drop for the dashboard;
-  else (no)
-    :write pcap to microSD, push numbers to the dashboard;
-  endif
-endwhile (stop or estop)
+if (pool buffer acquired?) then (yes)
+  fork
+    :enqueue to storage queue;
+    :TSK_STORAGE writes PCAP 2.4 to microSD;
+  fork again
+    :enqueue to telemetry queue;
+    :TSK_DASHBOARD streams 2 Hz JSON to web UI;
+  end fork
+else (pool full)
+  :drop frame (zero-malloc invariant);
+endif
 
-:flush the last buffers, close the pcap, back to idle;
 stop
 @enduml
