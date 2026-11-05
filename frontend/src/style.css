@@ -414,6 +414,12 @@ body {
   border-bottom: 1px solid var(--border-dim);
   letter-spacing: 0.05em;
   z-index: 1;
+  cursor: pointer;
+  user-select: none;
+}
+.stream-table th:hover {
+  background: var(--bg-hover);
+  color: var(--primary);
 }
 .stream-table tr {
   cursor: pointer;
@@ -552,5 +558,48 @@ body {
 }
 .stat-sub {
   font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Wi-Fi Channel Grid & SD Chunk Streamer Status */
+.ch-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+  margin: 6px 0 8px 0;
+}
+.btn-ch {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 0;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: center;
+}
+.btn-ch:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+.btn-ch.active {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+.sd-chunk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   color: var(--text-muted);
 }

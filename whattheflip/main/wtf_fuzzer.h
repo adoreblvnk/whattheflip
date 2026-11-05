@@ -22,7 +22,4 @@ EXPORT void wtf_fuzzer_inject_uart(void);
 EXPORT void wtf_fuzzer_inject_i2c_ack(void);
 EXPORT void wtf_fuzzer_inject_i2c_stretch(void);
 EXPORT void wtf_fuzzer_inject_wireless_jam(void);
-EXPORT void wtf_fuzzer_set_auto(bool enable);
-EXPORT bool wtf_fuzzer_get_auto(void);
-
 #endif /* WTF_FUZZER_H */

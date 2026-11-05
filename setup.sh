@@ -27,6 +27,8 @@ pico-sdk              | https://github.com/raspberrypi/pico-sdk.git
 pico-examples         | https://github.com/raspberrypi/pico-examples.git
 clang-format-barr-c   | https://github.com/petertorelli/clang-format-barr-c.git
 esp32c6-sniffer       | https://github.com/dj1ch/esp32c6-sniffer.git
+ESP32-Bus-Pirate      | https://github.com/geo-tp/ESP32-Bus-Pirate.git
+I2C-sniffer           | https://github.com/WhitehawkTailor/I2C-sniffer.git
 "
 
 printf '==> Fetching third-party repos into %s/third_party\n' "$ROOT"

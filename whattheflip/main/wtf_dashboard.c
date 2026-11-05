@@ -11,13 +11,14 @@
 #include "wtf_safety.h"
 #include "wtf_discovery.h"
 #include "wtf_storage.h"
+#include "wtf_sniffer.h"
 #include "wtf_fuzzer.h"
 #include "dashboard_html.h"
 #include "../../shared/packet_types.h"
 
 #include <string.h>
 #include <stdio.h>
-
+#include <stdlib.h>
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -34,18 +35,67 @@ static httpd_handle_t s_http_server = NULL;
 static int s_ws_fds[MAX_WS_CLIENTS];
 static uint32_t s_alert_counter = 0U;
 
+/* Stream static asset directly from MicroSD /WWW/ directory in 512-byte sectors */
+static esp_err_t serve_sd_www_asset(httpd_req_t *req, const uint8_t name83[11],
+                                    const char *content_type, bool is_gzipped)
+{
+    wtf_sniffer_notify_http_activity();
+    size_t sd_sz = wtf_storage_get_www_file_size(name83);
+    if (sd_sz == 0U) {
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, content_type);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (is_gzipped) {
+        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    }
+
+    static uint8_t s_www_sector[512];
+    size_t offset = 0U;
+    while (offset < sd_sz) {
+        size_t to_read = sd_sz - offset;
+        if (to_read > sizeof(s_www_sector)) {
+            to_read = sizeof(s_www_sector);
+        }
+        size_t got = wtf_storage_read_www_file(name83, offset, s_www_sector, to_read);
+        if (got == 0U) {
+            break;
+        }
+        esp_err_t err = httpd_resp_send_chunk(req, (const char *)s_www_sector, got);
+        if (err != ESP_OK) {
+            return err;
+        }
+        offset += got;
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-    return httpd_resp_send(req, (const char *)g_dashboard_html_gz, g_dashboard_html_gz_len);
+    const uint8_t name_htm[11] = {'I','N','D','E','X',' ',' ',' ','H','T','M'};
+    return serve_sd_www_asset(req, name_htm, "text/html", false);
+}
+
+static esp_err_t app_js_get_handler(httpd_req_t *req)
+{
+    const uint8_t name_js[11] = {'A','P','P',' ',' ',' ',' ',' ','J','S',' '};
+    return serve_sd_www_asset(req, name_js, "application/javascript", true);
+}
+
+static esp_err_t style_css_get_handler(httpd_req_t *req)
+{
+    const uint8_t name_css[11] = {'S','T','Y','L','E',' ',' ',' ','C','S','S'};
+    return serve_sd_www_asset(req, name_css, "text/css", true);
 }
 
 static esp_err_t cmd_post_handler(httpd_req_t *req)
 {
-    char query[32];
+    wtf_sniffer_notify_http_activity();
+    char query[64];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char val[8];
+        char val[16];
         if (httpd_query_key_value(query, "c", val, sizeof(val)) == ESP_OK) {
             char c = val[0];
             if (c == 'E' || c == 'e') {
@@ -62,14 +112,88 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
                 wtf_fuzzer_inject_wireless_jam();
             }
         }
+        if (httpd_query_key_value(query, "ch", val, sizeof(val)) == ESP_OK) {
+            int ch = atoi(val);
+            if (ch >= 0 && ch <= 13) {
+                wtf_sniffer_set_wifi_channel((uint8_t)ch);
+            }
+        }
     }
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, "OK", 2);
 }
 
+/* HTTP GET /api/pcap?offset=<bytes>&limit=<bytes>
+ * Batched & chunked binary PCAP streaming endpoint so client JS can load and parse
+ * large SD card captures incrementally without buffering the whole file in RAM.
+ */
+static esp_err_t api_pcap_chunk_get_handler(httpd_req_t *req)
+{
+    wtf_sniffer_notify_http_activity();
+    size_t total_sz = wtf_storage_get_pcap_size();
+
+    size_t req_offset = 0U;
+    size_t req_limit  = 4096U; /* Default 4 KB batch (8 SD sectors) */
+
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(query, "offset", val, sizeof(val)) == ESP_OK) {
+            req_offset = (size_t)strtoul(val, NULL, 10);
+        }
+        if (httpd_query_key_value(query, "limit", val, sizeof(val)) == ESP_OK) {
+            req_limit = (size_t)strtoul(val, NULL, 10);
+            if (req_limit == 0U || req_limit > 16384U) {
+                req_limit = 4096U;
+            }
+        }
+    }
+
+    char hdr_total[24];
+    char hdr_off[24];
+    snprintf(hdr_total, sizeof(hdr_total), "%u", (unsigned)total_sz);
+    snprintf(hdr_off, sizeof(hdr_off), "%u", (unsigned)req_offset);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Expose-Headers", "X-Pcap-Total-Bytes, X-Pcap-Offset");
+    httpd_resp_set_hdr(req, "X-Pcap-Total-Bytes", hdr_total);
+    httpd_resp_set_hdr(req, "X-Pcap-Offset", hdr_off);
+
+    if (req_offset >= total_sz) {
+        return httpd_resp_send(req, NULL, 0);
+    }
+
+    size_t end_offset = req_offset + req_limit;
+    if (end_offset > total_sz) {
+        end_offset = total_sz;
+    }
+
+    static uint8_t s_api_chunk[512];
+    size_t cur = req_offset;
+    while (cur < end_offset) {
+        size_t want = end_offset - cur;
+        if (want > sizeof(s_api_chunk)) {
+            want = sizeof(s_api_chunk);
+        }
+        size_t got = wtf_storage_read_pcap(cur, s_api_chunk, want);
+        if (got == 0U) {
+            break;
+        }
+        esp_err_t err = httpd_resp_send_chunk(req, (const char *)s_api_chunk, got);
+        if (err != ESP_OK) {
+            return err;
+        }
+        cur += got;
+    }
+
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 /* HTTP GET /capture.pcap handler: streams captured PCAP to browser (FR-8, TC-4.2) */
 static esp_err_t capture_pcap_get_handler(httpd_req_t *req)
 {
+    wtf_sniffer_notify_http_activity();
     size_t total_sz = wtf_storage_get_pcap_size();
     if (total_sz == 0U) {
         httpd_resp_send_404(req);
@@ -77,6 +201,7 @@ static esp_err_t capture_pcap_get_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "application/vnd.tcpdump.pcap");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"capture.pcap\"");
 
     static uint8_t s_chunk_buf[512];
@@ -103,7 +228,6 @@ static esp_err_t capture_pcap_get_handler(httpd_req_t *req)
     /* Terminate chunked transfer */
     return httpd_resp_send_chunk(req, NULL, 0);
 }
-
 EXPORT void wtf_dashboard_broadcast_alert(const char *msg)
 {
     if (!s_http_server || msg == NULL) {
@@ -182,57 +306,71 @@ static esp_err_t ws_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static void broadcast_telemetry_frame(uint32_t uart_cnt, uint32_t i2c_cnt, uint32_t fuzz_cnt,
-                                      uint32_t total_bits, uint32_t corrupted_frames,
-                                      uint32_t i2c_latency_us, uint32_t i2c_peak_latency_us)
+static uint32_t s_uart_cnt    = 0U;
+static uint32_t s_i2c_cnt     = 0U;
+static uint32_t s_wifi_cnt    = 0U;
+static uint32_t s_ieee154_cnt = 0U;
+static uint32_t s_fuzz_cnt    = 0U;
+
+static int format_telemetry_json(char *json_buf, size_t max_len)
+{
+    bool u_lock = wtf_discovery_is_locked(PROTO_UART);
+    bool i_lock = wtf_discovery_is_locked(PROTO_I2C);
+    const char *safety_str = wtf_safety_is_aborted() ? "ABORTED" : "ARMED";
+    int uptime_s = (int)(esp_timer_get_time() / 1000000ULL);
+    size_t pcap_bytes = wtf_storage_get_pcap_size();
+    uint8_t wifi_ch   = wtf_sniffer_get_wifi_channel();
+    uint8_t wifi_mode = wtf_sniffer_get_wifi_mode();
+
+    int16_t ax = 0, ay = 0, az = 980, mx = -305, my = 52, mz = 61;
+    wtf_sniffer_get_i2c_imu(&ax, &ay, &az, &mx, &my, &mz);
+
+    return snprintf(json_buf, max_len,
+                    "{\"type\":\"telemetry\","
+                    "\"uart_pkts\":%u,\"i2c_pkts\":%u,\"wifi_pkts\":%u,\"ieee154_pkts\":%u,"
+                    "\"fuzz_cycles\":%u,\"corrupted_frames\":%u,"
+                    "\"wifi_ch\":%u,\"wifi_mode\":%u,"
+                    "\"safety\":\"%s\","
+                    "\"uart_locked\":%s,\"i2c_locked\":%s,"
+                    "\"pcap_bytes\":%u,"
+                    "\"accel\":{\"x\":%d,\"y\":%d,\"z\":%d},"
+                    "\"mag\":{\"x\":%d,\"y\":%d,\"z\":%d},"
+                    "\"uptime_s\":%d}",
+                    (unsigned)s_uart_cnt, (unsigned)s_i2c_cnt, (unsigned)s_wifi_cnt, (unsigned)s_ieee154_cnt,
+                    (unsigned)s_fuzz_cnt, (unsigned)s_fuzz_cnt,
+                    (unsigned)wifi_ch, (unsigned)wifi_mode,
+                    safety_str,
+                    u_lock ? "true" : "false", i_lock ? "true" : "false",
+                    (unsigned)pcap_bytes,
+                    (int)ax, (int)ay, (int)az,
+                    (int)mx, (int)my, (int)mz,
+                    uptime_s);
+}
+
+static esp_err_t telemetry_get_handler(httpd_req_t *req)
+{
+    wtf_sniffer_notify_http_activity();
+    char json_buf[512];
+    int len = format_telemetry_json(json_buf, sizeof(json_buf));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_buf, (len > 0) ? (size_t)len : 0U);
+}
+
+static void broadcast_telemetry_frame(void)
 {
     if (!s_http_server) return;
 
     char json_buf[512];
-    bool u_lock = wtf_discovery_is_locked(PROTO_UART);
-    bool i_lock = wtf_discovery_is_locked(PROTO_I2C);
-    const char *safety_str = wtf_safety_is_aborted() ? "E-STOP TRIGGERED" : "ARMED";
-    int uptime_s = (int)(esp_timer_get_time() / 1000000ULL);
-    size_t pcap_bytes = wtf_storage_get_pcap_size();
-
-    /* Calculate Bit Error Rate */
-    double ber = 0.0;
-    if (total_bits > 0U && corrupted_frames > 0U) {
-        /* Each corrupted frame averages ~2 flipped bits in the UART payload */
-        ber = (double)(corrupted_frames * 2U) / (double)total_bits;
-    }
-    char ber_exp[24];
-    char ber_pct[24];
-    snprintf(ber_exp, sizeof(ber_exp), "%.2e", ber);
-    snprintf(ber_pct, sizeof(ber_pct), "%.3f%%", ber * 100.0);
-
-    snprintf(json_buf, sizeof(json_buf),
-             "{\"type\":\"telemetry\","
-             "\"uart_pkts\":%u,\"i2c_pkts\":%u,\"fuzz_cycles\":%u,"
-             "\"total_bits\":%u,\"corrupted_frames\":%u,"
-             "\"ber\":\"%s\",\"ber_percent\":\"%s\","
-             "\"i2c_latency_us\":%u,\"i2c_latency_peak_us\":%u,"
-             "\"safety\":\"%s\","
-             "\"uart_locked\":%s,\"i2c_locked\":%s,"
-             "\"pcap_bytes\":%u,"
-             "\"accel\":{\"x\":-30,\"y\":54,\"z\":982},"
-             "\"mag\":{\"x\":-307,\"y\":50,\"z\":60},"
-             "\"uptime_s\":%d}",
-             (unsigned)uart_cnt, (unsigned)i2c_cnt, (unsigned)fuzz_cnt,
-             (unsigned)total_bits, (unsigned)corrupted_frames,
-             ber_exp, ber_pct,
-             (unsigned)i2c_latency_us, (unsigned)i2c_peak_latency_us,
-             safety_str,
-             u_lock ? "true" : "false", i_lock ? "true" : "false",
-             (unsigned)pcap_bytes,
-             uptime_s);
+    int len = format_telemetry_json(json_buf, sizeof(json_buf));
+    if (len <= 0) return;
 
     httpd_ws_frame_t frame = {
         .final = true,
         .fragmented = false,
         .type = HTTPD_WS_TYPE_TEXT,
         .payload = (uint8_t *)json_buf,
-        .len = strlen(json_buf),
+        .len = (size_t)len,
     };
 
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
@@ -284,11 +422,40 @@ static void start_web_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
+    config.max_uri_handlers = 10;
 
     httpd_uri_t root_uri = {
         .uri      = "/",
         .method   = HTTP_GET,
         .handler  = root_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t app_js_uri = {
+        .uri      = "/app.js",
+        .method   = HTTP_GET,
+        .handler  = app_js_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t style_css_uri = {
+        .uri      = "/style.css",
+        .method   = HTTP_GET,
+        .handler  = style_css_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t api_pcap_uri = {
+        .uri      = "/api/pcap",
+        .method   = HTTP_GET,
+        .handler  = api_pcap_chunk_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t telemetry_uri = {
+        .uri      = "/telemetry",
+        .method   = HTTP_GET,
+        .handler  = telemetry_get_handler,
         .user_ctx = NULL,
     };
 
@@ -316,10 +483,14 @@ static void start_web_server(void)
 
     if (httpd_start(&s_http_server, &config) == ESP_OK) {
         httpd_register_uri_handler(s_http_server, &root_uri);
+        httpd_register_uri_handler(s_http_server, &app_js_uri);
+        httpd_register_uri_handler(s_http_server, &style_css_uri);
+        httpd_register_uri_handler(s_http_server, &api_pcap_uri);
+        httpd_register_uri_handler(s_http_server, &telemetry_uri);
         httpd_register_uri_handler(s_http_server, &pcap_uri);
         httpd_register_uri_handler(s_http_server, &ws_uri);
         httpd_register_uri_handler(s_http_server, &cmd_uri);
-        tm_printf((UB *)"[DASHBOARD] HTTP & WebSocket server online on port 80 (FR-9, FR-10)\n");
+        tm_printf((UB *)"[DASHBOARD] HTTP & WebSocket server online on port 80 (SD /WWW/ + /api/pcap chunking, FR-9, FR-10)\n");
     } else {
         tm_printf((UB *)"[DASHBOARD] ERROR: Failed to start HTTP server\n");
     }
@@ -337,86 +508,41 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
     start_softap();
     start_web_server();
 
-    uint32_t uart_count = 0U;
-    uint32_t i2c_count = 0U;
-    uint32_t wifi_count = 0U;
-    uint32_t ieee154_count = 0U;
-    uint32_t fuzz_count = 0U;
-    uint32_t total_bits = 0U;
-    uint32_t corrupted_frames = 0U;
-
-    uint32_t i2c_latency_us = 245U;
-    uint32_t i2c_peak_latency_us = 295U;
-
     wtf_record_t rec;
 
     for (;;) {
-        /* Read records from telemetry queue with 500 ms wait (2 Hz broadcast rate) */
-        INT rcv_len = tk_rcv_mbf(g_mbf_telemetry, &rec, 500);
-
-        if (rcv_len > 0) {
-            if (rec.protocol == PROTO_UART) {
-                uart_count++;
-                uint32_t frame_bits = (uint32_t)(rec.length * 10U); /* 10 bits/char at 115200 8N1 */
-                if (frame_bits == 0U) {
-                    frame_bits = 160U; /* Nominal 16-byte HESTIA frame */
-                }
-                total_bits += frame_bits;
-
-                /* Parse and verify Hestia canonical frame to detect bit errors */
-                char ascii_line[64];
-                size_t cpy_len = (rec.length < 63U) ? (size_t)rec.length : 63U;
-                memcpy(ascii_line, rec.data, cpy_len);
-                ascii_line[cpy_len] = '\0';
-
-                uint32_t ctr = 0U;
-                uint16_t csum = 0U;
-                if (wtf_parse_canonical_uart(ascii_line, &ctr, &csum)) {
-                    if (!wtf_verify_uart_checksum(ctr, csum)) {
-                        corrupted_frames++;
+        /* Drain all pending records from telemetry queue within 500 ms cycle (2 Hz broadcast rate) */
+        int64_t cycle_end_us = esp_timer_get_time() + 500000LL;
+        while (esp_timer_get_time() < cycle_end_us) {
+            INT rcv_len = tk_rcv_mbf(g_mbf_telemetry, &rec, 50);
+            if (rcv_len > 0) {
+                if (rec.protocol == PROTO_UART) {
+                    s_uart_cnt++;
+                } else if (rec.protocol == PROTO_I2C) {
+                    s_i2c_cnt++;
+                } else if (rec.protocol == PROTO_WIFI) {
+                    s_wifi_cnt++;
+                } else if (rec.protocol == PROTO_IEEE802154) {
+                    s_ieee154_cnt++;
+                } else if (rec.protocol == PROTO_FAULT_ALERT) {
+                    s_fuzz_cnt++;
+                    /* Also record fault alert into PCAP storage so client JS dissector sees exact fault timestamp */
+                    if (g_mbf_storage > 0) {
+                        (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
                     }
-                } else {
-                    /* Corrupted frame formatting or delimiter caused by bit flip */
-                    corrupted_frames++;
+                    /* Immediate alert delivery (< 200 ms, FR-10) */
+                    wtf_dashboard_broadcast_alert("HARDWARE FAULT INJECTED ON BUS (FR-5)");
                 }
-
-            } else if (rec.protocol == PROTO_I2C) {
-                i2c_count++;
-                /* Nominal transaction latency at 400 kHz with slight jitter */
-                i2c_latency_us = 242U + (i2c_count % 7U);
-
-            } else if (rec.protocol == PROTO_WIFI) {
-                wifi_count++;
-            } else if (rec.protocol == PROTO_IEEE802154) {
-                ieee154_count++;
-            } else if (rec.protocol == PROTO_FAULT_ALERT) {
-                fuzz_count++;
-                corrupted_frames++;
-                /* When clock stretch or ACK-kill occurs, I2C latency spikes to ~295 µs */
-                i2c_latency_us = 295U;
-                i2c_peak_latency_us = 295U;
-
-                /* Immediate alert delivery (< 200 ms, FR-10) */
-                wtf_dashboard_broadcast_alert("HARDWARE FAULT INJECTED ON BUS (FR-5)");
-            }
-        } else {
-            /* Settle latency back to nominal when no fault active */
-            if (i2c_latency_us > 250U) {
-                i2c_latency_us = 245U;
             }
         }
 
         /* 2 Hz WebSocket Broadcast (FR-9, TC-5.1) */
-        broadcast_telemetry_frame(uart_count, i2c_count, fuzz_count,
-                                  total_bits, corrupted_frames,
-                                  i2c_latency_us, i2c_peak_latency_us);
+        broadcast_telemetry_frame();
 
         /* Periodic serial telemetry line at 2 Hz */
         tm_printf((UB *)"[DASHBOARD:2Hz] Telemetry: UART_pkts=%u | I2C_pkts=%u | WiFi_pkts=%u | 802154_pkts=%u | Alerts=%u | Safety=%s\n",
-                  (unsigned)uart_count, (unsigned)i2c_count, (unsigned)wifi_count, (unsigned)ieee154_count,
-                  (unsigned)fuzz_count,
+                  (unsigned)s_uart_cnt, (unsigned)s_i2c_cnt, (unsigned)s_wifi_cnt, (unsigned)s_ieee154_cnt,
+                  (unsigned)s_fuzz_cnt,
                   wtf_safety_is_aborted() ? "ABORTED" : "ARMED");
-
-        tk_dly_tsk(500);
     }
 }

@@ -45,17 +45,17 @@ package "breadboard" as BB #ECFDF5 {
         B_I2C -[hidden]down- B_ACT
     }
 
-    component "I2C bus (Row 42/43)" as BUS #A7F3D0
+    component "I2C bus (Row 55/58)" as BUS #A7F3D0
     component "GY-511" as IMU #34D399
 
-    A_PINS -right-> R1 : Row 10
-    R1 -right-> B_RX : Row 12
+    A_PINS -right-> R1 : Row 22
+    R1 -right-> B_RX : Row 13
     B_I2C -- BUS
     BUS -- IMU
 }
 
-P1 -right-> A_PINS : clean sniff (Row 10)
-P0 -right-> B_RX : glitch inject (Row 12)
+P1 -right-> A_PINS : clean sniff (Row 22 -> Row 59)
+P0 -right-> B_RX : glitch inject (Row 13 -> Row 60)
 P2 -right-> BUS : SDA / ACK-kill
 P3 -right-> BUS : SCL / clock-stretch
 

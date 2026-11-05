@@ -7,11 +7,11 @@
  */
 
 #include "wtf_storage.h"
+#include "dashboard_html.h"
 #include "soc/gpio_struct.h"
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
 #include <string.h>
-
 /* PCAP File Header Constants */
 #define PCAP_MAGIC_NUMBER       0xA1B2C3D4U
 #define PCAP_VERSION_MAJOR      2U
@@ -97,6 +97,9 @@ typedef struct {
     uint32_t fat_start_sec;
     uint32_t root_clus;
     uint32_t data_start_sec;
+
+    /* /WWW/ directory cluster */
+    uint32_t www_dir_clus;
 
     /* /capture.pcap file state */
     uint32_t file_start_clus;
@@ -375,44 +378,73 @@ static inline uint32_t clus_to_lba(uint32_t clus)
     return s_fat.data_start_sec + (clus - 2U) * (uint32_t)s_fat.sec_per_clus;
 }
 
+static uint32_t fat32_get_next_cluster(uint32_t clus)
+{
+    if (!s_fat.mounted || clus < 2U) {
+        return 0x0FFFFFFFU;
+    }
+    uint32_t fat_sec = s_fat.fat_start_sec + ((clus * 4U) / 512U);
+    uint32_t ent_idx = clus % 128U;
+    if (!sd_read_sector(fat_sec, s_sector_scratch)) {
+        return 0x0FFFFFFFU;
+    }
+    uint32_t *fat_entries = (uint32_t *)s_sector_scratch;
+    return (fat_entries[ent_idx] & 0x0FFFFFFFU);
+}
+
 static uint32_t fat32_find_free_cluster(void)
 {
-    if (!sd_read_sector(s_fat.fat_start_sec, s_sector_scratch)) {
-        return 3U;
-    }
-
-    uint32_t *fat_entries = (uint32_t *)s_sector_scratch;
-    uint32_t free_clus = 3U;
-
-    for (uint32_t c = 3U; c < 128U; c++) {
-        if ((fat_entries[c] & 0x0FFFFFFFU) == 0U) {
-            free_clus = c;
-            fat_entries[c] = 0x0FFFFFFFU; /* Mark EOC */
+    for (uint32_t sec_off = 0U; sec_off < 8U && sec_off < s_fat.fat_sz_32; sec_off++) {
+        uint32_t fat_sec = s_fat.fat_start_sec + sec_off;
+        if (!sd_read_sector(fat_sec, s_sector_scratch)) {
             break;
         }
+        uint32_t *fat_entries = (uint32_t *)s_sector_scratch;
+        uint32_t start_idx = (sec_off == 0U) ? 3U : 0U;
+        for (uint32_t i = start_idx; i < 128U; i++) {
+            if ((fat_entries[i] & 0x0FFFFFFFU) == 0U) {
+                uint32_t free_clus = (sec_off * 128U) + i;
+                fat_entries[i] = 0x0FFFFFFFU; /* Mark EOC */
+                (void)sd_write_sector(fat_sec, s_sector_scratch);
+                if (s_fat.num_fats > 1U) {
+                    (void)sd_write_sector(fat_sec + s_fat.fat_sz_32, s_sector_scratch);
+                }
+                return free_clus;
+            }
+        }
     }
-
-    (void)sd_write_sector(s_fat.fat_start_sec, s_sector_scratch);
-    if (s_fat.num_fats > 1U) {
-        (void)sd_write_sector(s_fat.fat_start_sec + s_fat.fat_sz_32, s_sector_scratch);
-    }
-
-    return free_clus;
+    return 3U;
 }
 
 static bool fat32_link_cluster(uint32_t prev_clus, uint32_t next_clus)
 {
-    if (!sd_read_sector(s_fat.fat_start_sec, s_sector_scratch)) {
+    uint32_t prev_sec = s_fat.fat_start_sec + ((prev_clus * 4U) / 512U);
+    uint32_t next_sec = s_fat.fat_start_sec + ((next_clus * 4U) / 512U);
+
+    if (!sd_read_sector(prev_sec, s_sector_scratch)) {
         return false;
     }
 
     uint32_t *fat_entries = (uint32_t *)s_sector_scratch;
-    fat_entries[prev_clus] = next_clus;
-    fat_entries[next_clus] = 0x0FFFFFFFU;
+    fat_entries[prev_clus % 128U] = next_clus;
+    if (prev_sec == next_sec) {
+        fat_entries[next_clus % 128U] = 0x0FFFFFFFU;
+    }
 
-    bool ok = sd_write_sector(s_fat.fat_start_sec, s_sector_scratch);
+    bool ok = sd_write_sector(prev_sec, s_sector_scratch);
     if (s_fat.num_fats > 1U) {
-        (void)sd_write_sector(s_fat.fat_start_sec + s_fat.fat_sz_32, s_sector_scratch);
+        (void)sd_write_sector(prev_sec + s_fat.fat_sz_32, s_sector_scratch);
+    }
+
+    if (prev_sec != next_sec) {
+        if (sd_read_sector(next_sec, s_sector_scratch)) {
+            fat_entries = (uint32_t *)s_sector_scratch;
+            fat_entries[next_clus % 128U] = 0x0FFFFFFFU;
+            (void)sd_write_sector(next_sec, s_sector_scratch);
+            if (s_fat.num_fats > 1U) {
+                (void)sd_write_sector(next_sec + s_fat.fat_sz_32, s_sector_scratch);
+            }
+        }
     }
     return ok;
 }
@@ -428,6 +460,132 @@ static void fat32_update_filesize(uint32_t size)
         entries[s_fat.dirent_idx].file_size = size;
         (void)sd_write_sector(s_fat.dirent_sec, s_sector_scratch);
         s_fat.file_size_bytes = size;
+    }
+}
+
+/* Read arbitrary byte range from any FAT32 cluster chain */
+static size_t fat32_read_chain(uint32_t start_clus, uint32_t file_size,
+                               size_t offset, uint8_t *dest, size_t max_len)
+{
+    if (!s_fat.mounted || start_clus < 2U || offset >= file_size || dest == NULL || max_len == 0U) {
+        return 0U;
+    }
+
+    size_t avail = (size_t)file_size - offset;
+    size_t to_read = (avail < max_len) ? avail : max_len;
+    uint32_t clus_bytes = (uint32_t)s_fat.sec_per_clus * 512U;
+    uint32_t skip_clusters = (uint32_t)(offset / clus_bytes);
+    uint32_t clus = start_clus;
+
+    for (uint32_t i = 0U; i < skip_clusters; i++) {
+        uint32_t next = fat32_get_next_cluster(clus);
+        if (next < 2U || next >= 0x0FFFFFF8U) {
+            return 0U;
+        }
+        clus = next;
+    }
+
+    size_t copied = 0U;
+    size_t cur_off = offset;
+
+    while (copied < to_read && clus >= 2U && clus < 0x0FFFFFF8U) {
+        uint32_t off_in_clus = (uint32_t)(cur_off % clus_bytes);
+        uint32_t sec_in_clus = off_in_clus / 512U;
+        uint32_t off_in_sec  = off_in_clus % 512U;
+        uint32_t lba         = clus_to_lba(clus) + sec_in_clus;
+
+        if (!sd_read_sector(lba, s_sector_scratch)) {
+            break;
+        }
+
+        size_t sec_rem = 512U - off_in_sec;
+        size_t chunk   = (to_read - copied < sec_rem) ? (to_read - copied) : sec_rem;
+        memcpy(&dest[copied], &s_sector_scratch[off_in_sec], chunk);
+
+        copied  += chunk;
+        cur_off += chunk;
+
+        if ((cur_off % clus_bytes) == 0U && copied < to_read) {
+            clus = fat32_get_next_cluster(clus);
+        }
+    }
+
+    return copied;
+}
+
+/* Ensure or pre-seed a file inside /WWW/ directory */
+static void fat32_ensure_www_file(const uint8_t name83[11], const uint8_t *seed_data, uint32_t seed_len)
+{
+    if (!s_fat.mounted || s_fat.www_dir_clus < 2U || seed_data == NULL || seed_len == 0U) {
+        return;
+    }
+
+    uint32_t dir_lba = clus_to_lba(s_fat.www_dir_clus);
+    if (!sd_read_sector(dir_lba, s_sector_scratch)) {
+        return;
+    }
+
+    fat32_dirent_t *entries = (fat32_dirent_t *)s_sector_scratch;
+    int slot = -1;
+    for (int i = 0; i < 16; i++) {
+        if (memcmp(entries[i].name, name83, 11) == 0) {
+            if (entries[i].file_size == seed_len && entries[i].fst_clus_lo >= 2U) {
+                return; /* Already seeded with matching size */
+            }
+            slot = i;
+            break;
+        }
+        if (slot < 0 && (entries[i].name[0] == 0x00U || entries[i].name[0] == 0xE5U)) {
+            slot = i;
+        }
+    }
+
+    if (slot < 0) {
+        return;
+    }
+
+    uint32_t start_clus = fat32_find_free_cluster();
+    if (start_clus < 2U) {
+        return;
+    }
+
+    /* Re-read directory sector because fat32_find_free_cluster uses s_sector_scratch */
+    if (!sd_read_sector(dir_lba, s_sector_scratch)) {
+        return;
+    }
+    entries = (fat32_dirent_t *)s_sector_scratch;
+    memset(&entries[slot], 0, sizeof(fat32_dirent_t));
+    memcpy(entries[slot].name, name83, 11);
+    entries[slot].attr = 0x20U; /* Archive */
+    entries[slot].fst_clus_hi = (uint16_t)(start_clus >> 16);
+    entries[slot].fst_clus_lo = (uint16_t)(start_clus & 0xFFFFU);
+    entries[slot].file_size   = seed_len;
+    (void)sd_write_sector(dir_lba, s_sector_scratch);
+
+    /* Write file sectors across cluster chain */
+    uint32_t curr_clus = start_clus;
+    uint32_t sec_idx   = 0U;
+    uint32_t written   = 0U;
+
+    while (written < seed_len) {
+        uint32_t rem   = seed_len - written;
+        uint32_t chunk = (rem > 512U) ? 512U : rem;
+        memset(s_sector_scratch, 0, 512);
+        memcpy(s_sector_scratch, &seed_data[written], chunk);
+
+        uint32_t lba = clus_to_lba(curr_clus) + sec_idx;
+        (void)sd_write_sector(lba, s_sector_scratch);
+        written += chunk;
+        sec_idx++;
+
+        if (sec_idx >= s_fat.sec_per_clus && written < seed_len) {
+            uint32_t next_clus = fat32_find_free_cluster();
+            if (next_clus >= 2U) {
+                (void)fat32_link_cluster(curr_clus, next_clus);
+                curr_clus = next_clus;
+            }
+            sec_idx = 0U;
+        }
     }
 }
 
@@ -472,7 +630,7 @@ static bool fat32_mount(void)
     s_fat.fat_start_sec  = s_fat.lba_start + s_fat.rsvd_sec_cnt;
     s_fat.data_start_sec = s_fat.fat_start_sec + ((uint32_t)s_fat.num_fats * s_fat.fat_sz_32);
 
-    /* Look for or create /capture.pcap in root directory */
+    /* Look for or create /CAPTURE.PCAP and /WWW directory in root directory */
     uint32_t root_lba = clus_to_lba(s_fat.root_clus);
     if (!sd_read_sector(root_lba, s_sector_scratch)) {
         tm_printf((UB *)"[STORAGE] Failed to read root directory at LBA %u\n", (unsigned)root_lba);
@@ -480,65 +638,107 @@ static bool fat32_mount(void)
     }
 
     fat32_dirent_t *entries = (fat32_dirent_t *)s_sector_scratch;
-    const uint8_t target_name[11] = {'C','A','P','T','U','R','E','P','C','A','P'};
-    bool found = false;
-    int empty_slot = -1;
+    const uint8_t target_pcap[11] = {'C','A','P','T','U','R','E','P','C','A','P'};
+    const uint8_t target_www[11]  = {'W','W','W',' ',' ',' ',' ',' ',' ',' ',' '};
+    bool found_pcap = false;
+    bool found_www  = false;
+    int empty_slot_1 = -1;
+    int empty_slot_2 = -1;
 
     for (int i = 0; i < 16; i++) {
-        if (memcmp(entries[i].name, target_name, 11) == 0) {
-            found = true;
+        if (memcmp(entries[i].name, target_pcap, 11) == 0) {
+            found_pcap = true;
             s_fat.dirent_sec = root_lba;
             s_fat.dirent_idx = (uint16_t)i;
             s_fat.file_start_clus = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
             s_fat.file_curr_clus = s_fat.file_start_clus;
             s_fat.file_size_bytes = entries[i].file_size;
             s_fat.file_clus_sec_idx = 0U;
-            break;
-        }
-        if (empty_slot < 0 && (entries[i].name[0] == 0x00U || entries[i].name[0] == 0xE5U)) {
-            empty_slot = i;
+        } else if (memcmp(entries[i].name, target_www, 11) == 0 && (entries[i].attr & 0x10U) != 0U) {
+            found_www = true;
+            s_fat.www_dir_clus = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
+        } else if (entries[i].name[0] == 0x00U || entries[i].name[0] == 0xE5U) {
+            if (empty_slot_1 < 0) {
+                empty_slot_1 = i;
+            } else if (empty_slot_2 < 0) {
+                empty_slot_2 = i;
+            }
         }
     }
 
-    if (!found) {
-        if (empty_slot < 0) {
-            empty_slot = 0;
-        }
-        uint32_t new_clus = fat32_find_free_cluster();
-        if (new_clus < 2U) {
-            new_clus = 3U;
-        }
+    s_fat.mounted = true;
 
-        memset(&entries[empty_slot], 0, sizeof(fat32_dirent_t));
-        memcpy(entries[empty_slot].name, target_name, 11);
-        entries[empty_slot].attr = 0x20U; /* Archive */
-        entries[empty_slot].fst_clus_hi = (uint16_t)(new_clus >> 16);
-        entries[empty_slot].fst_clus_lo = (uint16_t)(new_clus & 0xFFFFU);
-        entries[empty_slot].file_size = 0U;
+    if (!found_pcap) {
+        int slot = (empty_slot_1 >= 0) ? empty_slot_1 : 0;
+        uint32_t new_clus = fat32_find_free_cluster();
+        if (new_clus < 2U) new_clus = 3U;
+
+        if (sd_read_sector(root_lba, s_sector_scratch)) {
+            entries = (fat32_dirent_t *)s_sector_scratch;
+            memset(&entries[slot], 0, sizeof(fat32_dirent_t));
+            memcpy(entries[slot].name, target_pcap, 11);
+            entries[slot].attr = 0x20U; /* Archive */
+            entries[slot].fst_clus_hi = (uint16_t)(new_clus >> 16);
+            entries[slot].fst_clus_lo = (uint16_t)(new_clus & 0xFFFFU);
+            entries[slot].file_size = 0U;
+            (void)sd_write_sector(root_lba, s_sector_scratch);
+        }
 
         s_fat.dirent_sec = root_lba;
-        s_fat.dirent_idx = (uint16_t)empty_slot;
+        s_fat.dirent_idx = (uint16_t)slot;
         s_fat.file_start_clus = new_clus;
         s_fat.file_curr_clus = new_clus;
         s_fat.file_clus_sec_idx = 0U;
         s_fat.file_size_bytes = 0U;
-
-        (void)sd_write_sector(root_lba, s_sector_scratch);
+        empty_slot_1 = empty_slot_2;
     }
 
-    s_fat.mounted = true;
-    tm_printf((UB *)"[STORAGE] FAT32 mounted: cluster_sz=%u, file=/capture.pcap size=%u (FR-8, TC-4.2)\n",
-              (unsigned)(s_fat.sec_per_clus * 512U), (unsigned)s_fat.file_size_bytes);
+    if (!found_www && empty_slot_1 >= 0) {
+        uint32_t www_clus = fat32_find_free_cluster();
+        if (www_clus >= 2U) {
+            /* Zero-initialize new /WWW directory sector */
+            memset(s_sector_scratch, 0, 512);
+            (void)sd_write_sector(clus_to_lba(www_clus), s_sector_scratch);
+
+            if (sd_read_sector(root_lba, s_sector_scratch)) {
+                entries = (fat32_dirent_t *)s_sector_scratch;
+                memset(&entries[empty_slot_1], 0, sizeof(fat32_dirent_t));
+                memcpy(entries[empty_slot_1].name, target_www, 11);
+                entries[empty_slot_1].attr = 0x10U; /* Directory attribute */
+                entries[empty_slot_1].fst_clus_hi = (uint16_t)(www_clus >> 16);
+                entries[empty_slot_1].fst_clus_lo = (uint16_t)(www_clus & 0xFFFFU);
+                entries[empty_slot_1].file_size = 0U;
+                (void)sd_write_sector(root_lba, s_sector_scratch);
+                s_fat.www_dir_clus = www_clus;
+            }
+        }
+    }
+
+    /* Pre-seed /WWW/INDEX.HTM, /WWW/APP.JS, and /WWW/STYLE.CSS on MicroSD card */
+    const uint8_t name_htm[11] = {'I','N','D','E','X',' ',' ',' ','H','T','M'};
+    const uint8_t name_js[11]  = {'A','P','P',' ',' ',' ',' ',' ','J','S',' '};
+    const uint8_t name_css[11] = {'S','T','Y','L','E',' ',' ',' ','C','S','S'};
+    fat32_ensure_www_file(name_htm, g_www_index_htm, (uint32_t)g_www_index_htm_len);
+    fat32_ensure_www_file(name_js,  g_www_app_js_gz, (uint32_t)g_www_app_js_gz_len);
+    fat32_ensure_www_file(name_css, g_www_style_css_gz, (uint32_t)g_www_style_css_gz_len);
+
+    tm_printf((UB *)"[STORAGE] FAT32 mounted: cluster_sz=%u, /WWW clus=%u, file=/capture.pcap size=%u (FR-8, TC-4.2)\n",
+              (unsigned)(s_fat.sec_per_clus * 512U), (unsigned)s_fat.www_dir_clus, (unsigned)s_fat.file_size_bytes);
     return true;
 }
 
 /* -------------------------------------------------------------------------- */
-/* PCAP Export Helpers for Dashboard HTTP GET /capture.pcap                   */
+/* PCAP & /WWW/ Asset Export Helpers for Dashboard HTTP Server                */
 /* -------------------------------------------------------------------------- */
 
 EXPORT size_t wtf_storage_get_pcap_size(void)
 {
     return s_total_pcap_bytes;
+}
+
+EXPORT uint32_t wtf_storage_get_record_count(void)
+{
+    return s_total_records;
 }
 
 EXPORT size_t wtf_storage_read_pcap(size_t offset, uint8_t *dest, size_t max_len)
@@ -550,33 +750,58 @@ EXPORT size_t wtf_storage_read_pcap(size_t offset, uint8_t *dest, size_t max_len
     size_t available = (size_t)s_total_pcap_bytes - offset;
     size_t to_copy = (available < max_len) ? available : max_len;
 
-    /* If request fits within linear buffer starting from offset */
-    if (offset + to_copy <= s_buf_write_pos && s_buf_flushed_pos == 0U) {
-        memcpy(dest, &s_pcap_buf[offset], to_copy);
-        return to_copy;
-    }
-
-    /* If mounted on SD card, read sector directly */
-    if (s_fat.mounted && s_fat.file_start_clus >= 2U) {
-        uint32_t sector_idx = (uint32_t)(offset / 512U);
-        uint32_t sec_offset = (uint32_t)(offset % 512U);
-        uint32_t lba = clus_to_lba(s_fat.file_start_clus) + sector_idx;
-        if (sd_read_sector(lba, s_sector_scratch)) {
-            size_t sec_avail = 512U - sec_offset;
-            size_t chunk = (to_copy < sec_avail) ? to_copy : sec_avail;
-            memcpy(dest, &s_sector_scratch[sec_offset], chunk);
-            return chunk;
+    /* 1. If the requested range still resides in the unflushed 32 KB write buffer, serve from buffer */
+    uint32_t ram_base_offset = s_total_pcap_bytes - s_buf_write_pos;
+    if (offset >= ram_base_offset) {
+        size_t buf_off = offset - ram_base_offset;
+        if (buf_off + to_copy <= s_buf_write_pos) {
+            memcpy(dest, &s_pcap_buf[buf_off], to_copy);
+            return to_copy;
         }
     }
 
-    /* Fallback: copy what is reachable in RAM buffer */
-    if (offset < s_buf_write_pos) {
-        size_t chunk = (s_buf_write_pos - offset < to_copy) ? (s_buf_write_pos - offset) : to_copy;
-        memcpy(dest, &s_pcap_buf[offset], chunk);
-        return chunk;
+    /* 2. Read across FAT32 cluster chain on MicroSD card */
+    return fat32_read_chain(s_fat.file_start_clus, s_total_pcap_bytes, offset, dest, to_copy);
+}
+
+static bool fat32_find_www_entry(const uint8_t name83[11], uint32_t *out_clus, uint32_t *out_size)
+{
+    if (!s_fat.mounted || s_fat.www_dir_clus < 2U || name83 == NULL) {
+        return false;
     }
 
+    uint32_t lba = clus_to_lba(s_fat.www_dir_clus);
+    if (!sd_read_sector(lba, s_sector_scratch)) {
+        return false;
+    }
+    fat32_dirent_t *entries = (fat32_dirent_t *)s_sector_scratch;
+    for (int i = 0; i < 16; i++) {
+        if (memcmp(entries[i].name, name83, 11) == 0 && (entries[i].attr & 0x10U) == 0U) {
+            *out_clus = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
+            *out_size = entries[i].file_size;
+            return (*out_clus >= 2U && *out_size > 0U);
+        }
+    }
+    return false;
+}
+EXPORT size_t wtf_storage_get_www_file_size(const uint8_t name83[11])
+{
+    uint32_t clus = 0U;
+    uint32_t sz   = 0U;
+    if (fat32_find_www_entry(name83, &clus, &sz)) {
+        return (size_t)sz;
+    }
     return 0U;
+}
+
+EXPORT size_t wtf_storage_read_www_file(const uint8_t name83[11], size_t offset, uint8_t *dest, size_t max_len)
+{
+    uint32_t clus = 0U;
+    uint32_t sz   = 0U;
+    if (!fat32_find_www_entry(name83, &clus, &sz)) {
+        return 0U;
+    }
+    return fat32_read_chain(clus, sz, offset, dest, max_len);
 }
 
 EXPORT bool wtf_storage_is_card_ready(void)
@@ -626,14 +851,16 @@ EXPORT void wtf_storage_task(INT stacd, void *exinf)
         INT rcv_len = tk_rcv_mbf(g_mbf_storage, &rec, 100);
 
         if (rcv_len > 0) {
-            /* Format 16-byte PCAP packet header */
+            /* Format 16-byte PCAP packet header + 2-byte USER0 link header [protocol, probe_id] */
+            uint32_t incl_len = (uint32_t)rec.length + 2U;
             pcaprec_hdr_t pcap_rec;
-            pcap_rec.ts_sec = rec.timestamp_us / 1000000U;
-            pcap_rec.ts_usec = rec.timestamp_us % 1000000U;
-            pcap_rec.incl_len = (uint32_t)rec.length;
-            pcap_rec.orig_len = (uint32_t)rec.length;
+            pcap_rec.ts_sec   = rec.timestamp_us / 1000000U;
+            pcap_rec.ts_usec  = rec.timestamp_us % 1000000U;
+            pcap_rec.incl_len = incl_len;
+            pcap_rec.orig_len = incl_len;
 
-            uint32_t rec_total_len = (uint32_t)(sizeof(pcaprec_hdr_t) + rec.length);
+            uint8_t user0_hdr[2] = { rec.protocol, rec.probe_id };
+            uint32_t rec_total_len = (uint32_t)(sizeof(pcaprec_hdr_t) + incl_len);
 
             /* Check space in 32 KB buffer; compact flushed sectors if necessary (Gap A4) */
             if (s_buf_write_pos + rec_total_len > STORAGE_BUF_SIZE) {
@@ -649,6 +876,9 @@ EXPORT void wtf_storage_task(INT stacd, void *exinf)
             if (s_buf_write_pos + rec_total_len <= STORAGE_BUF_SIZE) {
                 memcpy(&s_pcap_buf[s_buf_write_pos], &pcap_rec, sizeof(pcaprec_hdr_t));
                 s_buf_write_pos += sizeof(pcaprec_hdr_t);
+
+                memcpy(&s_pcap_buf[s_buf_write_pos], user0_hdr, 2U);
+                s_buf_write_pos += 2U;
 
                 if (rec.length > 0U) {
                     memcpy(&s_pcap_buf[s_buf_write_pos], rec.data, rec.length);

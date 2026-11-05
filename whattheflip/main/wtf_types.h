@@ -37,11 +37,10 @@ typedef enum {
 
 /* Decoder Remap Identifiers (FR-3, TC-1.3) */
 #define WTF_DECODER_NONE            0
-#define WTF_DECODER_UART1_RX        1   /* Remap to UART1 RX input signal */
-#define WTF_DECODER_TIMER_CAPTURE   2   /* Remap to Timer / MCPWM capture signal */
+#define WTF_DECODER_UART1_RX        1   /* Remap to UART1 RX / TX hardware peripheral */
+#define WTF_DECODER_I2C0_EXT        2   /* Remap to I2C0 (I2CEXT0) hardware peripheral */
 #define WTF_DECODER_RMT_RX0         3   /* Remap to RMT RX channel 0 */
 #define WTF_DECODER_RMT_RX1         4   /* Remap to RMT RX channel 1 */
-
 /* Fault Mode Identifiers (FR-5, TC-3.1, TC-3.2) */
 #define WTF_FAULT_NONE              0
 #define WTF_FAULT_UART_BIT_FLIP     1

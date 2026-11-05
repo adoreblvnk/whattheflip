@@ -11,7 +11,6 @@
 #include "wtf_sniffer.h"
 #include "wtf_fuzzer.h"
 #include "wtf_storage.h"
-#include "wtf_telemetry.h"
 #include "wtf_dashboard.h"
 
 #define TASK_STACK_SZ           3072
@@ -155,14 +154,13 @@ EXPORT INT usermain(void)
     }
     tm_printf((UB *)"[INIT] Kernel objects created (MPF_PACKETS, MBF_STORAGE, MTX_PROBE_ACCESS)\n");
 
-    /* Launch Subsystem Tasks */
+    /* Launch 6 Subsystem Tasks */
     launch_task("TSK_SAFETY",    (FP)wtf_safety_task,    4,  2048);
+    launch_task("TSK_DASHBOARD", (FP)wtf_dashboard_task, 6,  4096);
     launch_task("TSK_DISCOVERY", (FP)wtf_discovery_task, 7,  TASK_STACK_SZ);
     launch_task("TSK_SNIFFER",   (FP)wtf_sniffer_task,   8,  TASK_STACK_SZ);
     launch_task("TSK_FUZZER",    (FP)wtf_fuzzer_task,    9,  TASK_STACK_SZ);
     launch_task("TSK_STORAGE",   (FP)wtf_storage_task,   10, STORAGE_STACK_SZ);
-    launch_task("TSK_TELEMETRY", (FP)wtf_telemetry_task, 11, TASK_STACK_SZ);
-    launch_task("TSK_DASHBOARD", (FP)wtf_dashboard_task, 6,  4096);
 
     tm_printf((UB *)"[INIT] All 6 subsystem tasks launched. Initial task sleeping forever.\n\n");
     tk_slp_tsk(TMO_FEVR);

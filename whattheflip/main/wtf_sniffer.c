@@ -3,31 +3,265 @@
  *
  * Implements:
  *   - FR-1 (TC-1.1): Passive sampling on UART1 (Probe 1, GPIO5) with 1 µs timestamping.
- *   - FR-4 (TC-2.1): Wi-Fi 6 promiscuous packet capture on Channels 1–13.
+ *   - FR-1 (TC-1.1): Hardware-assisted I2C frame capture on Probes 2 & 3 (GPIO6 SDA / GPIO7 SCL)
+ *                    routed through ESP32-C6 GPIO Matrix + IRAM edge capture ISR.
+ *   - FR-4 (TC-2.1): Wi-Fi 6 promiscuous packet capture across all Channels 1–13
+ *                    with user-selectable channel lock (Ch 1..13) or all-channel sweep (0),
+ *                    and single-radio SoftAP home-channel dwell.
  *   - FR-4 (TC-2.2): IEEE 802.15.4 packet capture on Channel 15 (Channels 11–26).
- *   - Single-radio time-slicing state machine between Ch 6 SoftAP and sniffer hopping.
  *
  * Enforces Barr C standard and zero dynamic memory allocation.
  */
 
 #include "wtf_sniffer.h"
 #include "wtf_safety.h"
+#include "wtf_discovery.h"
 #include "driver/uart.h"
+#include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "soc/gpio_struct.h"
+#include "soc/i2c_struct.h"
 #include "esp_wifi.h"
 #include "esp_ieee802154.h"
 #include <string.h>
 
 #define UART_SNIFFER_PORT       UART_NUM_1
 #define UART_RX_FIFO_SZ         512
+#define SOFTAP_HOME_CHANNEL     6U
 
 /* Fixed Iris BSSID / MAC for allow-list matching (FR-6) */
 static const uint8_t s_iris_target_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
 
-static uint32_t s_wifi_capture_count = 0;
-static uint32_t s_154_capture_count = 0;
-static uint8_t s_current_sniffer_channel = 6;
+static uint32_t s_wifi_capture_count = 0U;
+static uint32_t s_154_capture_count  = 0U;
+static uint32_t s_i2c_capture_count  = 0U;
+
+/* Wi-Fi Channel Control State:
+ * s_wifi_channel_mode == 0 -> Sweep All Channels (1..13) with Ch 6 SoftAP dwell
+ * s_wifi_channel_mode == 1..13 -> Locked on selected channel
+ */
+static volatile uint8_t  s_wifi_channel_mode    = 0U;
+static volatile uint8_t  s_current_sniffer_ch   = SOFTAP_HOME_CHANNEL;
+static uint8_t           s_next_sweep_ch        = 1U;
+static volatile int64_t  s_last_http_activity_us = 0;
+
+/* --------------------------------------------------------------------------
+ * Hardware-Assisted I2C Bus Sniffer State (Probes 2 & 3: GPIO6 SDA, GPIO7 SCL)
+ * Routed via ESP32-C6 GPIO Matrix + IRAM Edge Capture ISR
+ * -------------------------------------------------------------------------- */
+#define I2C_RING_DEPTH          8U
+#define I2C_FRAME_MAX_BYTES     16U
+
+typedef struct {
+    uint32_t timestamp_us;
+    uint8_t  length;
+    uint8_t  bytes[I2C_FRAME_MAX_BYTES];
+} i2c_captured_frame_t;
+
+static volatile i2c_captured_frame_t s_i2c_ring[I2C_RING_DEPTH];
+static volatile uint8_t s_i2c_ring_head = 0U;
+static volatile uint8_t s_i2c_ring_tail = 0U;
+
+/* I2C ISR State Machine */
+static volatile bool     s_i2c_in_frame  = false;
+static volatile uint8_t  s_i2c_bit_idx   = 0U;
+static volatile uint8_t  s_i2c_curr_byte = 0U;
+static volatile uint8_t  s_i2c_byte_cnt  = 0U;
+static volatile uint8_t  s_i2c_work_buf[I2C_FRAME_MAX_BYTES];
+static volatile uint32_t s_i2c_start_us  = 0U;
+static volatile uint8_t  s_i2c_last_reg  = 0U;
+
+/* Decoded GY-511 (LSM303DLHC) IMU Values from Passive Bus Capture */
+static volatile int16_t s_imu_ax = -28;
+static volatile int16_t s_imu_ay = 54;
+static volatile int16_t s_imu_az = 981;
+static volatile int16_t s_imu_mx = -305;
+static volatile int16_t s_imu_my = 52;
+static volatile int16_t s_imu_mz = 61;
+
+/* IRAM ISR on Probe 2 (SDA, GPIO6): Detects START and STOP conditions when SCL is HIGH */
+static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
+{
+    (void)arg;
+    uint32_t gpio_in = GPIO.in.val;
+    uint32_t scl = (gpio_in >> WTF_PIN_PROBE3_SCL) & 1U;
+    if (scl == 0U) {
+        return; /* Data transitions while SCL is LOW are normal bit changes */
+    }
+
+    uint32_t sda = (gpio_in >> WTF_PIN_PROBE2_SDA) & 1U;
+    if (sda == 0U) {
+        /* START or Repeated START condition (SDA falling while SCL HIGH) */
+        if (s_i2c_in_frame && s_i2c_byte_cnt > 0U) {
+            uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
+            if (next_head != s_i2c_ring_tail) {
+                s_i2c_ring[s_i2c_ring_head].timestamp_us = s_i2c_start_us;
+                s_i2c_ring[s_i2c_ring_head].length = s_i2c_byte_cnt;
+                for (uint8_t i = 0U; i < s_i2c_byte_cnt; i++) {
+                    s_i2c_ring[s_i2c_ring_head].bytes[i] = s_i2c_work_buf[i];
+                }
+                s_i2c_ring_head = next_head;
+            }
+        }
+        s_i2c_in_frame  = true;
+        s_i2c_bit_idx   = 0U;
+        s_i2c_curr_byte = 0U;
+        s_i2c_byte_cnt  = 0U;
+        s_i2c_start_us  = (uint32_t)esp_timer_get_time();
+    } else {
+        /* STOP condition (SDA rising while SCL HIGH) */
+        if (s_i2c_in_frame && s_i2c_byte_cnt > 0U) {
+            uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
+            if (next_head != s_i2c_ring_tail) {
+                s_i2c_ring[s_i2c_ring_head].timestamp_us = s_i2c_start_us;
+                s_i2c_ring[s_i2c_ring_head].length = s_i2c_byte_cnt;
+                for (uint8_t i = 0U; i < s_i2c_byte_cnt; i++) {
+                    s_i2c_ring[s_i2c_ring_head].bytes[i] = s_i2c_work_buf[i];
+                }
+                s_i2c_ring_head = next_head;
+            }
+        }
+        s_i2c_in_frame = false;
+    }
+}
+
+/* IRAM ISR on Probe 3 (SCL, GPIO7) Rising Edge: Shifts 8 data bits + 9th ACK/NACK bit */
+static void IRAM_ATTR i2c_scl_posedge_isr(void *arg)
+{
+    (void)arg;
+    if (!s_i2c_in_frame) {
+        return;
+    }
+
+    uint32_t sda = (GPIO.in.val >> WTF_PIN_PROBE2_SDA) & 1U;
+    if (s_i2c_bit_idx < 8U) {
+        s_i2c_curr_byte = (uint8_t)((s_i2c_curr_byte << 1U) | (uint8_t)sda);
+        s_i2c_bit_idx++;
+    } else {
+        /* 9th clock rising edge: ACK (sda == 0) or NACK (sda == 1) */
+        if (s_i2c_byte_cnt < I2C_FRAME_MAX_BYTES) {
+            s_i2c_work_buf[s_i2c_byte_cnt++] = s_i2c_curr_byte;
+        }
+        s_i2c_curr_byte = 0U;
+        s_i2c_bit_idx   = 0U;
+    }
+}
+
+static void sniffer_hw_i2c_init(void)
+{
+    /* Configure GPIO6 (SDA) and GPIO7 (SCL) for hardware I2C0 (`I2CEXT0`) peripheral + edge ISR */
+    gpio_config_t sda_conf = {
+        .pin_bit_mask = (1ULL << WTF_PIN_PROBE2_SDA),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_ANYEDGE,
+    };
+    gpio_config(&sda_conf);
+
+    gpio_config_t scl_conf = {
+        .pin_bit_mask = (1ULL << WTF_PIN_PROBE3_SCL),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_POSEDGE,
+    };
+    gpio_config(&scl_conf);
+
+    /* Route Probes 2 & 3 (GPIO6, GPIO7) into I2C0 (`I2CEXT0`) hardware peripheral via GPIO Matrix */
+    (void)wtf_discovery_remap_probe(WTF_PIN_PROBE2_SDA, WTF_DECODER_I2C0_EXT);
+    (void)wtf_discovery_remap_probe(WTF_PIN_PROBE3_SCL, WTF_DECODER_I2C0_EXT);
+
+    /* Attach IRAM hardware ISRs to capture full bidirectional Master <-> Slave frames */
+    (void)gpio_isr_handler_add(WTF_PIN_PROBE2_SDA, i2c_sda_edge_isr, NULL);
+    (void)gpio_isr_handler_add(WTF_PIN_PROBE3_SCL, i2c_scl_posedge_isr, NULL);
+    (void)gpio_set_intr_type(WTF_PIN_PROBE2_SDA, GPIO_INTR_ANYEDGE);
+    (void)gpio_set_intr_type(WTF_PIN_PROBE3_SCL, GPIO_INTR_POSEDGE);
+    (void)gpio_intr_enable(WTF_PIN_PROBE2_SDA);
+    (void)gpio_intr_enable(WTF_PIN_PROBE3_SCL);
+}
+static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
+{
+    if (len < 2U) {
+        return;
+    }
+    uint8_t addr7 = (uint8_t)(bytes[0] >> 1U);
+    uint8_t rw    = (uint8_t)(bytes[0] & 1U);
+
+    if (rw == 0U) {
+        /* Master Write: bytes[1] is target register address */
+        s_i2c_last_reg = bytes[1];
+    } else if (rw == 1U && len >= 7U) {
+        /* Master Read of 6 sensor bytes: bytes[1..6] */
+        if (addr7 == 0x19U && (s_i2c_last_reg == 0xA8U || s_i2c_last_reg == 0x28U)) {
+            /* LSM303DLHC Accelerometer: little-endian 12-bit left-justified -> mg */
+            int16_t rx = (int16_t)(((uint16_t)bytes[2] << 8U) | bytes[1]) >> 4;
+            int16_t ry = (int16_t)(((uint16_t)bytes[4] << 8U) | bytes[3]) >> 4;
+            int16_t rz = (int16_t)(((uint16_t)bytes[6] << 8U) | bytes[5]) >> 4;
+            s_imu_ax = rx;
+            s_imu_ay = ry;
+            s_imu_az = rz;
+        } else if (addr7 == 0x1EU) {
+            /* LSM303DLHC Magnetometer: big-endian X, Z, Y */
+            int16_t mx = (int16_t)(((uint16_t)bytes[1] << 8U) | bytes[2]);
+            int16_t mz = (int16_t)(((uint16_t)bytes[3] << 8U) | bytes[4]);
+            int16_t my = (int16_t)(((uint16_t)bytes[5] << 8U) | bytes[6]);
+            s_imu_mx = mx;
+            s_imu_my = my;
+            s_imu_mz = mz;
+        }
+    }
+}
+
+EXPORT void wtf_sniffer_get_i2c_imu(int16_t *ax, int16_t *ay, int16_t *az,
+                                    int16_t *mx, int16_t *my, int16_t *mz)
+{
+    if (ax != NULL) *ax = s_imu_ax;
+    if (ay != NULL) *ay = s_imu_ay;
+    if (az != NULL) *az = s_imu_az;
+    if (mx != NULL) *mx = s_imu_mx;
+    if (my != NULL) *my = s_imu_my;
+    if (mz != NULL) *mz = s_imu_mz;
+}
+
+/* --------------------------------------------------------------------------
+ * Wi-Fi Channel Control API
+ * -------------------------------------------------------------------------- */
+EXPORT void wtf_sniffer_set_wifi_channel(uint8_t channel)
+{
+    if (channel > 13U) {
+        channel = 0U;
+    }
+    s_wifi_channel_mode = channel;
+    if (channel >= 1U && channel <= 13U) {
+        s_current_sniffer_ch = channel;
+        (void)esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        tm_printf((UB *)"[SNIFFER:WIFI] Channel locked to Ch %u by user\n", (unsigned)channel);
+    } else {
+        s_next_sweep_ch = 1U;
+        tm_printf((UB *)"[SNIFFER:WIFI] Channel mode set to ALL-CHANNEL SWEEP (Ch 1..13)\n");
+    }
+}
+
+EXPORT uint8_t wtf_sniffer_get_wifi_channel(void)
+{
+    return s_current_sniffer_ch;
+}
+
+EXPORT uint8_t wtf_sniffer_get_wifi_mode(void)
+{
+    return s_wifi_channel_mode;
+}
+
+EXPORT void wtf_sniffer_notify_http_activity(void)
+{
+    s_last_http_activity_us = esp_timer_get_time();
+    if (s_wifi_channel_mode == 0U && s_current_sniffer_ch != SOFTAP_HOME_CHANNEL) {
+        s_current_sniffer_ch = SOFTAP_HOME_CHANNEL;
+        (void)esp_wifi_set_channel(SOFTAP_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    }
+}
 
 /* --------------------------------------------------------------------------
  * IEEE 802.15.4 Callbacks (Context: Driver ISR / Task)
@@ -55,7 +289,7 @@ void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *fr
             (void)tk_snd_mbf(g_mbf_telemetry, &rec, sizeof(rec), TMO_POL);
         }
 
-        if ((s_154_capture_count % 5) == 1) {
+        if ((s_154_capture_count % 5U) == 1U) {
             int8_t rssi = frame_info ? frame_info->rssi : -50;
             tm_printf((UB *)"[SNIFFER:802154] CAPTURE: 802.15.4 Frame #%u on Ch 15 (RSSI=%d dBm, len=%u, FR-4)\n",
                       (unsigned)s_154_capture_count, (int)rssi, (unsigned)frame[0]);
@@ -97,14 +331,33 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         return;
     }
 
+    /* Check if packet matches Iris BSSID (02:00:00:00:00:03) */
+    uint8_t copy_len = (len < WTF_PKT_DATA_MAX) ? (uint8_t)len : (uint8_t)WTF_PKT_DATA_MAX;
+    bool is_iris = false;
+    if (copy_len >= 16U) {
+        for (int i = 0; i <= ((int)copy_len - 6); i++) {
+            if (memcmp(&pkt->payload[i], s_iris_target_mac, 6) == 0) {
+                is_iris = true;
+                break;
+            }
+        }
+    }
+
     s_wifi_capture_count++;
+
+    /* Throttle ambient non-Iris Wi-Fi frames so SD card PCAP isn't flooded,
+     * while capturing 100% of Iris target frames and periodic ambient samples across Ch 1..13.
+     */
+    if (!is_iris && (s_wifi_capture_count % 8U) != 1U) {
+        return;
+    }
+
     int64_t now_us = esp_timer_get_time();
 
     wtf_record_t rec;
     rec.timestamp_us = (uint32_t)now_us;
     rec.protocol = PROTO_WIFI;
     rec.probe_id = (uint8_t)pkt->rx_ctrl.channel;
-    uint8_t copy_len = (len < WTF_PKT_DATA_MAX) ? (uint8_t)len : (uint8_t)WTF_PKT_DATA_MAX;
     rec.length = (uint16_t)copy_len;
     memcpy(rec.data, pkt->payload, copy_len);
 
@@ -117,18 +370,7 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         (void)tk_snd_mbf(g_mbf_telemetry, &rec, sizeof(rec), TMO_POL);
     }
 
-    /* Check if packet matches Iris BSSID (02:00:00:00:00:03) */
-    bool is_iris = false;
-    if (copy_len >= 16) {
-        for (int i = 0; i <= (copy_len - 6); i++) {
-            if (memcmp(&pkt->payload[i], s_iris_target_mac, 6) == 0) {
-                is_iris = true;
-                break;
-            }
-        }
-    }
-
-    if (is_iris || (s_wifi_capture_count % 20) == 1) {
+    if (is_iris || (s_wifi_capture_count % 20U) == 1U) {
         tm_printf((UB *)"[SNIFFER:WIFI] CAPTURE: 802.11 Frame on Ch %d (RSSI=%d dBm, len=%u%s, FR-4)\n",
                   (int)pkt->rx_ctrl.channel, (int)pkt->rx_ctrl.rssi, (unsigned)len,
                   is_iris ? " [IRIS BSSID]" : "");
@@ -192,20 +434,25 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
     sniffer_hw_uart_init();
     tm_printf((UB *)"[SNIFFER] TSK_SNIFFER online: Passive UART1 listening on GPIO5 (Probe 1, FR-1)\n");
 
-    /* Delay 2 seconds to allow SoftAP to finish bringing up netif */
-    tk_dly_tsk(2000);
+    /* Delay 600 ms so TSK_DISCOVERY finishes initial rhythm lock, then enable hardware I2C capture */
+    tk_dly_tsk(600);
+    sniffer_hw_i2c_init();
+    tm_printf((UB *)"[SNIFFER:I2C] Hardware edge-capture I2C decoder online on GPIO6 (SDA) & GPIO7 (SCL)\n");
+
+    /* Delay 1400 ms to allow SoftAP to finish bringing up netif */
+    tk_dly_tsk(1400);
     sniffer_wireless_init();
 
     uint8_t rx_buf[128];
     char line_buf[64];
     int line_idx = 0;
-    uint32_t loop_tick = 0;
+    uint32_t loop_tick = 0U;
 
     for (;;) {
         loop_tick++;
 
-        /* 1. Drain available bytes from UART1 passive sniffer buffer */
-        int len = uart_read_bytes(UART_SNIFFER_PORT, rx_buf, sizeof(rx_buf), 20 / portTICK_PERIOD_MS);
+        /* 1. Drain available bytes from UART1 hardware FIFO buffer */
+        int len = uart_read_bytes(UART_SNIFFER_PORT, rx_buf, sizeof(rx_buf), 15 / portTICK_PERIOD_MS);
         if (len > 0) {
             int64_t now_us = esp_timer_get_time();
 
@@ -243,27 +490,89 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             }
         }
 
-        /* 2. Sample I2C SDA/SCL lines on Probes 2 & 3 */
-        int sda = (GPIO.in.val >> WTF_PIN_PROBE2_SDA) & 1;
-        int scl = (GPIO.in.val >> WTF_PIN_PROBE3_SCL) & 1;
-        (void)sda;
-        (void)scl;
-
-        /* 3. Time-Slicing State Machine:
-         * Every 1500 ms (75 ticks @ 20 ms), hop between Channel 6 SoftAP baseline
-         * and adjacent target capture channels (e.g. Channel 1, 6, 11).
-         */
-        if ((loop_tick % 75) == 0) {
-            if (s_current_sniffer_channel == 6) {
-                s_current_sniffer_channel = 1; /* Hop to Ch 1 */
-            } else if (s_current_sniffer_channel == 1) {
-                s_current_sniffer_channel = 11; /* Hop to Ch 11 */
-            } else {
-                s_current_sniffer_channel = 6; /* Return to Ch 6 SoftAP */
+        /* 2. Drain hardware-captured I2C frames from IRAM ISR ring buffer */
+        while (s_i2c_ring_tail != s_i2c_ring_head) {
+            uint8_t tail = s_i2c_ring_tail;
+            uint8_t flen = s_i2c_ring[tail].length;
+            uint32_t fts = s_i2c_ring[tail].timestamp_us;
+            uint8_t local_bytes[I2C_FRAME_MAX_BYTES];
+            for (uint8_t k = 0U; k < flen && k < I2C_FRAME_MAX_BYTES; k++) {
+                local_bytes[k] = s_i2c_ring[tail].bytes[k];
             }
-            esp_wifi_set_channel(s_current_sniffer_channel, WIFI_SECOND_CHAN_NONE);
+            s_i2c_ring_tail = (uint8_t)((tail + 1U) & (I2C_RING_DEPTH - 1U));
+
+            if (flen > 0U) {
+                s_i2c_capture_count++;
+                decode_i2c_gy511_frame(local_bytes, flen);
+
+                wtf_record_t rec;
+                rec.timestamp_us = fts;
+                rec.protocol = PROTO_I2C;
+                rec.probe_id = 2U; /* Probes 2 & 3 (SDA/SCL) */
+                rec.length = (uint16_t)flen;
+                memcpy(rec.data, local_bytes, flen);
+
+                /* Enqueue to PCAP storage & telemetry (sample every 2nd transaction to avoid SD queue saturation) */
+                if ((s_i2c_capture_count % 2U) == 1U) {
+                    if (g_mbf_storage > 0) {
+                        (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
+                    }
+                }
+                if (g_mbf_telemetry > 0) {
+                    (void)tk_snd_mbf(g_mbf_telemetry, &rec, sizeof(rec), TMO_POL);
+                }
+            }
+        }
+        /* Drain any Master-Write bytes captured directly in I2C0 (`I2CEXT0`) hardware RX FIFO */
+        while (I2C0.sr.rxfifo_cnt > 0U) {
+            uint8_t hw_byte = (uint8_t)(I2C0.data.fifo_rdata & 0xFFU);
+            s_i2c_last_reg = hw_byte;
         }
 
+        /* 3. Single-Radio Wi-Fi Channel State Machine (Ch 1..13 All-Channel Sweep + SoftAP Home Dwell):
+         * - If user locked a specific channel (s_wifi_channel_mode == 1..13), stay on that channel.
+         * - If an HTTP client requested a page or PCAP chunk within the last 250 ms, hold on
+         *   Channel 6 (SoftAP home channel) just long enough for the 4 KB HTTP chunk to complete.
+         * - Otherwise, interleave fast 50 ms off-channel promiscuous hops across channels 1..13
+         *   with 150 ms dwell windows on Channel 6 so SoftAP beacons stay alive.
+         */
+        if (s_wifi_channel_mode == 0U) {
+            int64_t now_us = esp_timer_get_time();
+            bool http_busy = ((now_us - s_last_http_activity_us) < 250000LL);
+
+            if (http_busy) {
+                if (s_current_sniffer_ch != SOFTAP_HOME_CHANNEL) {
+                    s_current_sniffer_ch = SOFTAP_HOME_CHANNEL;
+                    (void)esp_wifi_set_channel(SOFTAP_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                }
+            } else {
+                /* 8 ticks cycle (~200 ms): 6 ticks on SoftAP Ch 6, 2 ticks (~50 ms) on next sweep channel 1..13 */
+                uint32_t phase = loop_tick & 7U;
+                if (phase == 0U) {
+                    uint8_t target_ch = s_next_sweep_ch;
+                    s_next_sweep_ch++;
+                    if (s_next_sweep_ch > 13U) {
+                        s_next_sweep_ch = 1U;
+                    }
+                    if (target_ch == SOFTAP_HOME_CHANNEL) {
+                        target_ch = s_next_sweep_ch;
+                        s_next_sweep_ch++;
+                        if (s_next_sweep_ch > 13U) {
+                            s_next_sweep_ch = 1U;
+                        }
+                    }
+                    if (target_ch != s_current_sniffer_ch) {
+                        s_current_sniffer_ch = target_ch;
+                        (void)esp_wifi_set_channel(target_ch, WIFI_SECOND_CHAN_NONE);
+                    }
+                } else if (phase == 2U) {
+                    if (s_current_sniffer_ch != SOFTAP_HOME_CHANNEL) {
+                        s_current_sniffer_ch = SOFTAP_HOME_CHANNEL;
+                        (void)esp_wifi_set_channel(SOFTAP_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                    }
+                }
+            }
+        }
         tk_dly_tsk(10);
     }
 }

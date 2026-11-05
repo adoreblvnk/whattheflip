@@ -17,11 +17,15 @@ extern "C" {
 
 EXPORT void   wtf_storage_task(INT stacd, void *exinf);
 
-/* PCAP inspection and download helpers for HTTP GET /capture.pcap (FR-8, TC-4.2) */
-EXPORT size_t wtf_storage_get_pcap_size(void);
-EXPORT size_t wtf_storage_read_pcap(size_t offset, uint8_t *dest, size_t max_len);
-EXPORT bool   wtf_storage_is_card_ready(void);
+/* PCAP inspection, chunked streaming, and SD /WWW/ asset helpers (FR-8, TC-4.2) */
+EXPORT size_t   wtf_storage_get_pcap_size(void);
+EXPORT uint32_t wtf_storage_get_record_count(void);
+EXPORT size_t   wtf_storage_read_pcap(size_t offset, uint8_t *dest, size_t max_len);
+EXPORT bool     wtf_storage_is_card_ready(void);
 
+/* Read static web files (/WWW/INDEX.HTM, /WWW/APP.JS, /WWW/STYLE.CSS) from MicroSD */
+EXPORT size_t   wtf_storage_get_www_file_size(const uint8_t name83[11]);
+EXPORT size_t   wtf_storage_read_www_file(const uint8_t name83[11], size_t offset, uint8_t *dest, size_t max_len);
 #ifdef __cplusplus
 }
 #endif

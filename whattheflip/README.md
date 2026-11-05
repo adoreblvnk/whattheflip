@@ -9,12 +9,11 @@
 | Task | Priority | Stack | Function | Requirement |
 |---|---|---|---|---|
 | **TSK_SAFETY** | 4 | 2048 B | Hardware E-stop on GPIO9 (BOOT button). Direct register write floats Probes 0..3 in $< 200\text{ ns}$. Latches `FLG_SAFETY_ABORT`. | FR-7 (TC-4.1) |
-| **TSK_DASHBOARD** | 6 | 4096 B | Wi-Fi SoftAP (SSID `whattheflip`, Ch 6, IP `192.168.4.1`) + embedded HTTP/WebSocket server on Port 80. Broadcasts JSON telemetry at 2 Hz and $< 200\text{ ms}$ fault alerts. | FR-9 (TC-5.1), FR-10 (TC-5.2) |
+| **TSK_DASHBOARD** | 6 | 4096 B | Wi-Fi SoftAP (SSID `whattheflip`, Ch 6, IP `192.168.4.1`) + embedded HTTP/WebSocket server on Port 80. Serves `/WWW/` SD card assets, streams 4 KB `/api/pcap` chunks, and broadcasts 2 Hz telemetry & $< 200\text{ ms}$ fault alerts. | FR-9 (TC-5.1), FR-10 (TC-5.2) |
 | **TSK_DISCOVERY** | 7 | 3072 B | High-speed edge rhythm classification. Measures bit periods; locks UART @ 115200 baud and I2C @ 400 kHz upon 16 consecutive valid edges. | FR-2 (TC-1.2) |
-| **TSK_SNIFFER** | 8 | 3072 B | Passive hardware UART1 listener on Probe 1 (GPIO5). Dispatches framed records to storage and telemetry message buffers. | FR-1 (TC-1.1) |
-| **TSK_FUZZER** | 9 | 3072 B | Controlled hardware fault injector. Emits 10 µs bit flips on Probe 0 (Row 12) and 50 µs ACK kills on Probe 2 (Row 43). Duty cycle $< 0.005\% \ll 5\%$. | FR-5 (TC-3.1, TC-3.2) |
-| **TSK_STORAGE** | 10 | 4096 B | Delkin USDCOEM-32GB MicroSD writer via software bitbang SPI (GPIO18..21). Writes standard PCAP format off `MBF_STORAGE` (depth 16). | FR-8 (TC-4.2) |
-| **TSK_TELEMETRY** | 11 | 3072 B | Periodic status broadcaster at 2 Hz off `MBF_TELEMETRY` (depth 8). Emits packet counters and fault alert events. | FR-9 (TC-5.1), FR-10 (TC-5.2) |
+| **TSK_SNIFFER** | 8 | 3072 B | Passive hardware UART1 listener on Probe 1 (GPIO5), hardware edge-capture I2C decoder on Probes 2 & 3 (GPIO6/7), Wi-Fi Ch 1..13 sweep/lock, and 802.15.4 Ch 15 capture. | FR-1 (TC-1.1), FR-4 (TC-2.1, TC-2.2) |
+| **TSK_FUZZER** | 9 | 3072 B | Controlled hardware fault injector. Emits 10 µs bit flips on Probe 0 (Row 13) and 9th-clock 50 µs ACK kills on Probe 2 (Row 58). Duty cycle $< 0.005\% \ll 5\%$. | FR-5 (TC-3.1, TC-3.2), FR-6 (TC-3.3) |
+| **TSK_STORAGE** | 10 | 4096 B | Delkin USDCOEM-32GB MicroSD FAT32 driver via software bitbang SPI (GPIO18..21). Pre-seeds `/WWW/` web assets and writes standard PCAP 2.4 records off `MBF_STORAGE` (depth 16). | FR-8 (TC-4.2) |
 | **TSK_IDLE** | 32 | 1024 B | Lowest priority WFI power-saver; ensures scheduler invariant when all tasks sleep. | System Invariant |
 
 ---
@@ -23,10 +22,10 @@
 
 | Pin | Identifier | Breadboard Node | Function |
 |---|---|---|---|
-| **GPIO4** | Probe 0 | Row B12 | Fault Injection: 10 µs glitch into Daphne GP1 RX (220 Ω series limited). |
-| **GPIO5** | Probe 1 | Row B10 | Clean Sniffer: Passive UART1 listening to Hestia GP0 TX at 115200 baud. |
-| **GPIO6** | Probe 2 | Row C43 | I2C SDA Sniffer / 50 µs ACK-kill injector. |
-| **GPIO7** | Probe 3 | Row C42 | I2C SCL Sniffer / clock stretch monitor. |
+| **GPIO4** | Probe 0 | Row A60 (Row 13) | Fault Injection: 10 µs glitch into Daphne GP1 RX (220 Ω series limited). |
+| **GPIO5** | Probe 1 | Row A59 (Row 22) | Clean Sniffer: Passive UART1 listening to Hestia GP0 TX at 115200 baud. |
+| **GPIO6** | Probe 2 | Row F58 | I2C SDA Sniffer (IRAM START/STOP ISR) / 9th-clock 50 µs ACK-kill injector. |
+| **GPIO7** | Probe 3 | Row F55 | I2C SCL Sniffer (IRAM Pos-Edge ISR) / 50 µs clock stretch injector. |
 | **GPIO9** | E-Stop | Onboard Button | Hardware negative-edge interrupt; immediately floats all probes in $< 200\text{ ns}$. |
 | **GPIO18..21** | MicroSD SPI | Slot | SCK (18), MOSI (19), MISO (20), CS (21, jumpered from GP15). Bitbang SPI. |
 
