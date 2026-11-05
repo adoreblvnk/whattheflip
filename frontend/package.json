@@ -1,7 +1,7 @@
 {
   "name": "whattheflip-dashboard",
   "version": "1.0.0",
-  "description": "Technical Editorial Security Diagnostic Dashboard for whattheflip",
+  "description": "Self-Contained Packet Tracer + Wireshark + Logic Scope Workbench on MicroSD /WWW/",
   "type": "module",
   "scripts": {
     "build": "node build.js"

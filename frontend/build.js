@@ -11,7 +11,7 @@ if (!fs.existsSync(DIST_DIR)) {
   fs.mkdirSync(DIST_DIR, { recursive: true });
 }
 
-console.log("==> Building Technical Editorial Dashboard with VanJS + esbuild...");
+console.log("==> Building Packet Tracer + Wireshark SD /WWW/ Workbench with VanJS + esbuild...");
 
 // 1. Bundle and minify JavaScript
 const jsResult = await esbuild.build({
