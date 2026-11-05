@@ -81,6 +81,8 @@ EXPORT uint8_t hestia_uart_get_mode(void)
     return s_tx_mode;
 }
 
+#define HESTIA_LED_MASK         0x000003FCUL /* GP2..GP9 on Maker Pi Base */
+
 LOCAL void hestia_uart_hw_init(void)
 {
     /* Reset UART0 peripheral */
@@ -95,6 +97,14 @@ LOCAL void hestia_uart_hw_init(void)
     out_w(GPIO(0), GPIO_DRIVE_4MA | GPIO_SHEMITT);
     out_w(GPIO_CTRL(1), GPIO_CTRL_FUNCSEL_UART);
     out_w(GPIO(1), GPIO_IE | GPIO_DRIVE_4MA | GPIO_SHEMITT);
+
+    /* Configure Maker Pi Base GP2..GP9 LEDs as SIO outputs for TX sweep feedback */
+    for (uint32_t pin = 2U; pin <= 9U; pin++) {
+        out_w(GPIO_CTRL(pin), GPIO_CTRL_FUNCSEL_SIO);
+        out_w(GPIO(pin), GPIO_DRIVE_4MA);
+    }
+    out_w(GPIO_OUT_CLR, HESTIA_LED_MASK);
+    out_w(GPIO_OE_SET, HESTIA_LED_MASK);
 
     /* 115200 baud at 125 MHz sys_clk:
      * Divisor = 125,000,000 / (16 * 115200) = 67.816666...
@@ -272,11 +282,10 @@ EXPORT void hestia_uart_tx_task(INT stacd, void *exinf)
             break;
         }
 
-        /* Periodic telemetry log */
-        if ((counter % 5) == 0 || counter <= 3) {
-            tm_printf((UB *)"[HESTIA:TX] PKT #%u (rate=%u Hz, mode=%u, csum=0x%04X, len=%d)\n",
-                      counter, (unsigned)s_tx_rate_hz, (unsigned)current_mode, checksum, pkt_len);
-        }
+        /* Sweep Maker Pi Base GP2..GP9 blue LEDs on every transmitted frame */
+        uint32_t active_led_pin = 2U + (counter & 7U);
+        out_w(GPIO_OUT_CLR, HESTIA_LED_MASK);
+        out_w(GPIO_OUT_SET, (1UL << active_led_pin));
 
         /* Dynamic rate delay (e.g. 1000 ms @ 1 Hz, 500 ms @ 2 Hz, 100 ms @ 10 Hz) */
         tk_dly_tsk((RELTIM)s_tx_period_ms);

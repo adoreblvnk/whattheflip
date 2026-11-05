@@ -146,14 +146,16 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
     (void)exinf;
 
     filter_init(&s_accel_filt);
-    /* Configure GP2 as physical I2C fault indicator LED, GP18 as buzzer */
+    /* Configure GP2 as physical I2C fault indicator LED, GP8..GP15 as 8-LED tilt meter, GP18 as buzzer */
     daphne_hw_gpio_init_out(2);
+    for (uint32_t pin = 8U; pin <= 15U; pin++) {
+        daphne_hw_gpio_init_out(pin);
+    }
     daphne_hw_gpio_init_out(18);
     /* Test beep & LED flash on boot to prove hardware works */
     daphne_hw_gpio_set(2, true);
     daphne_hw_buzzer_beep(80);
     daphne_hw_gpio_set(2, false);
-
     /* 1. Universal GPIO scan (GP2..GP28) with NO pullup/pulldown to find any pulled-up line */
     uint32_t raw_pins = daphne_hw_scan_all_pins_raw();
     tm_printf((UB *)"[DAPHNE:I2C] Raw pin mask (no pull): 0x%08X (", raw_pins);
@@ -230,7 +232,8 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
                   ret, daphne_hw_i2c_get_abrt_source());
     }
 
-    uint8_t raw_buf[6];
+    uint8_t accel_raw_buf[6];
+    uint8_t mag_raw_buf[6];
     uint32_t poll_count = 0;
     uint32_t i2c_fault_count = 0;
 
@@ -241,33 +244,44 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
         uint8_t reg_accel = LSM303_OUT_X_L_A | LSM303_AUTO_INC;
         ret = daphne_hw_i2c_write(LSM303_ACCEL_ADDR, &reg_accel, 1, true);
         if (ret >= 0) {
-            ret = daphne_hw_i2c_read(LSM303_ACCEL_ADDR, raw_buf, 6, false);
+            ret = daphne_hw_i2c_read(LSM303_ACCEL_ADDR, accel_raw_buf, 6, false);
         }
 
         if (ret >= 0) {
-            int16_t raw_x = (int16_t)(((uint16_t)raw_buf[1] << 8) | raw_buf[0]) >> 4;
-            int16_t raw_y = (int16_t)(((uint16_t)raw_buf[3] << 8) | raw_buf[2]) >> 4;
-            int16_t raw_z = (int16_t)(((uint16_t)raw_buf[5] << 8) | raw_buf[4]) >> 4;
+            int16_t raw_x = (int16_t)(((uint16_t)accel_raw_buf[1] << 8) | accel_raw_buf[0]) >> 4;
+            int16_t raw_y = (int16_t)(((uint16_t)accel_raw_buf[3] << 8) | accel_raw_buf[2]) >> 4;
+            int16_t raw_z = (int16_t)(((uint16_t)accel_raw_buf[5] << 8) | accel_raw_buf[4]) >> 4;
 
             int16_t avg_x = 0, avg_y = 0, avg_z = 0;
             filter_update(&s_accel_filt, raw_x, raw_y, raw_z, &avg_x, &avg_y, &avg_z);
+
+            /* Drive Maker Pi Base GP8..GP15 blue LEDs as an 8-LED physical tilt spirit level */
+            int32_t tilt_slot = ((int32_t)avg_x + 1000) / 250;
+            if (tilt_slot < 0) tilt_slot = 0;
+            if (tilt_slot > 7) tilt_slot = 7;
+            for (uint32_t p = 8U; p <= 15U; p++) {
+                daphne_hw_gpio_set(p, (p == (uint32_t)(8 + tilt_slot)));
+            }
 
             /* 2. Read Magnetometer (6 bytes starting at OUT_X_H_M) */
             uint8_t reg_mag = LSM303_OUT_X_H_M;
             int mret = daphne_hw_i2c_write(LSM303_MAG_ADDR, &reg_mag, 1, true);
             if (mret >= 0) {
-                mret = daphne_hw_i2c_read(LSM303_MAG_ADDR, raw_buf, 6, false);
+                mret = daphne_hw_i2c_read(LSM303_MAG_ADDR, mag_raw_buf, 6, false);
             }
 
             if (mret >= 0) {
-                int16_t mag_x = (int16_t)(((uint16_t)raw_buf[0] << 8) | raw_buf[1]);
-                int16_t mag_z = (int16_t)(((uint16_t)raw_buf[2] << 8) | raw_buf[3]);
-                int16_t mag_y = (int16_t)(((uint16_t)raw_buf[4] << 8) | raw_buf[5]);
+                int16_t mag_x = (int16_t)(((uint16_t)mag_raw_buf[0] << 8) | mag_raw_buf[1]);
+                int16_t mag_z = (int16_t)(((uint16_t)mag_raw_buf[2] << 8) | mag_raw_buf[3]);
+                int16_t mag_y = (int16_t)(((uint16_t)mag_raw_buf[4] << 8) | mag_raw_buf[5]);
 
-                /* Log every poll (5 Hz) for instantaneous dashboard responsiveness */
+                /* Log every poll (5 Hz) with raw 0xA8 register hex bytes + moving-average mg */
                 daphne_hw_gpio_set(2, false); /* Clear fault LED on success */
-                tm_printf((UB *)"[DAPHNE:I2C] ACCEL mg: X=%d Y=%d Z=%d (avg: X=%d Y=%d Z=%d) | MAG: X=%d Y=%d Z=%d\n",
-                          raw_x, raw_y, raw_z, avg_x, avg_y, avg_z, mag_x, mag_y, mag_z);
+                tm_printf((UB *)"[DAPHNE:I2C] ACCEL mg: X=%d Y=%d Z=%d (avg: X=%d Y=%d Z=%d) [0xA8: %02X %02X %02X %02X %02X %02X] | MAG: X=%d Y=%d Z=%d\n",
+                          raw_x, raw_y, raw_z, avg_x, avg_y, avg_z,
+                          accel_raw_buf[0], accel_raw_buf[1], accel_raw_buf[2],
+                          accel_raw_buf[3], accel_raw_buf[4], accel_raw_buf[5],
+                          mag_x, mag_y, mag_z);
             } else {
                 i2c_fault_count++;
                 tm_printf((UB *)"[DAPHNE:I2C] FAULT: Mag read failed (err=%d, abrt=0x%04X, faults=%u)\n",

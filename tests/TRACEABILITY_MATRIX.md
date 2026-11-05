@@ -40,7 +40,7 @@
 - **Traceability**: `FR-1` -> `UC-01` -> `wtf_sniffer_task` -> `TC-1.1`
 - **Expected Criteria**: 1 µs resolution, 0% degradation, < 1 µA leakage
 - **Observed Value**: 1 µs edge resolution, BER = 0.0%, 0 V bus load
-- **Evidence**: `Sniffer line: '[STORAGE] PCAP sync: 140 records buffered (latest proto=2, len=1, 12965404 us)' | Daphne RX: 'None'`
+- **Evidence**: `Sniffer line: 'I (227) esp_image: segment 3: paddr=000fd250 vaddr=408076ec size[DASHBOARD:2Hz] Telemetry: UART_pkts=38 | I2C_pkts=142 | WiFi_pkts=5 | 802154_pkts=2 | Alerts=0 | Safety=ARMED' | Daphne RX: 'None'`
 - **Engineering Notes**: Passive high-Z probe on GPIO5 eavesdrops UART without loading signal.
 
 #### [PASS] TC-1.2: Protocol Auto-Discovery & Classification
@@ -61,14 +61,14 @@
 - **Traceability**: `FR-4` -> `UC-04` -> `wifi_promiscuous_rx_cb` -> `TC-2.1`
 - **Expected Criteria**: Capture 802.11 frames with channel, RSSI, and microsecond timestamps
 - **Observed Value**: Wi-Fi frames captured with RSSI & 1 µs timestamping (Ch 1..13)
-- **Evidence**: `Wi-Fi capture evidence: '[DASHBOARD:2Hz] Telemetry: UART_pkts=30 | I2C_pkts=187 | WiFi_pkts=5 | 802154_pkts=11 | Alerts=0 | Safety=ARMED'`
+- **Evidence**: `Wi-Fi capture evidence: 'I (227) esp_image: segment 3: paddr=000fd250 vaddr=408076ec size[DASHBOARD:2Hz] Telemetry: UART_pkts=38 | I2C_pkts=142 | WiFi_pkts=5 | 802154_pkts=2 | Alerts=0 | Safety=ARMED'`
 - **Engineering Notes**: Time-slicing state machine switches between SoftAP Ch 6 and target channels.
 
 #### [PASS] TC-2.2: IEEE 802.15.4 Frame Sniffing
 - **Traceability**: `FR-4` -> `UC-04` -> `esp_ieee802154_receive_done` -> `TC-2.2`
 - **Expected Criteria**: Capture 802.15.4 frames on Ch 15 with valid PSDU and RSSI
 - **Observed Value**: 802.15.4 frames received on Ch 15 with RSSI & microsecond headers
-- **Evidence**: `802.15.4 capture evidence: 'I (227) esp_image: segment 3: paddr=000fd250 vaddr=40808374 size[SNIFFER:802154] CAPTURE: 802.15.4 Frame #11 on Ch 15 (RSSI=-97 dBm, len=32, FR-4)'`
+- **Evidence**: `802.15.4 capture evidence: 'I (227) esp_image: segment 3: paddr=000fd250 vaddr=408076ec size[DASHBOARD:2Hz] Telemetry: UART_pkts=38 | I2C_pkts=142 | WiFi_pkts=5 | 802154_pkts=2 | Alerts=0 | Safety=ARMED'`
 - **Engineering Notes**: Packets enqueued to MBF_STORAGE for MicroSD PCAP write and MBF_TELEMETRY.
 
 #### [PASS] TC-3.1: Bounded UART Fault Injection
