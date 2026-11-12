@@ -853,8 +853,17 @@ function WaveformScopeTab() {
     if (activeGlitchBus.val === "UART" && outStr === inStr && inStr.includes(":")) {
       outStr = inStr.slice(0, -4) + "F771";
     }
-    let sampleByteIn  = inStr.charCodeAt(Math.min(11, inStr.length - 1)) || 0x46;
-    let sampleByteOut = isCorrupt ? (sampleByteIn ^ 0x08) : sampleByteIn;
+    let diffIdx = Math.min(11, inStr.length - 1);
+    for (let i = 0; i < Math.min(inStr.length, outStr.length); i++) {
+      if (inStr.charCodeAt(i) !== outStr.charCodeAt(i)) {
+        diffIdx = i;
+        break;
+      }
+    }
+    let sampleByteIn  = inStr.charCodeAt(diffIdx) || 0x46;
+    let sampleByteOut = (isCorrupt && outStr.charCodeAt(diffIdx) && outStr.charCodeAt(diffIdx) !== sampleByteIn)
+                      ? outStr.charCodeAt(diffIdx)
+                      : (isCorrupt ? (sampleByteIn ^ 0x08) : sampleByteIn);
 
     let bitsIn  = charToBits8N1(sampleByteIn);
     let bitsOut = charToBits8N1(sampleByteOut);
@@ -906,7 +915,7 @@ function WaveformScopeTab() {
         div({ class: "insp-card-title" },
           span("LOGIC SCOPE"),
           span({ class: "mono", style: isCorrupt ? "color:var(--state-glitch);font-weight:800" : "color:var(--proto-uart);font-weight:700" },
-            isCorrupt ? `⚡ ROW 13 GLITCH ACTIVE (Faults: ${corruptedCount.val})` : `● Row 22→13 (${uartPkts.val} UART | ${i2cPkts.val} I²C)`)
+            isCorrupt ? `⚡ ROW 13 GLITCH ACTIVE (Faults: ${Math.max(corruptedCount.val, pcapAuditFaults.val)})` : `● Row 22→13 (${uartPkts.val} UART | ${i2cPkts.val} I²C)`)
         ),
 
         div({ class: "scope-header-bar" },
@@ -1473,7 +1482,7 @@ function updateFromTelemetry(d) {
     prevRfPkts = rfSum;
     zigbeePkts.val = d.ieee154_pkts;
   }
-  if (d.corrupted_frames != null) corruptedCount.val = d.corrupted_frames;
+  if (d.corrupted_frames != null) corruptedCount.val = Math.max(d.corrupted_frames, clientCorruptFrames);
   if (d.wifi_ch != null) wifiActiveCh.val = d.wifi_ch;
   if (d.wifi_mode != null) wifiChannelMode.val = d.wifi_mode;
   if (d.pcap_bytes != null) pcapSize.val = d.pcap_bytes;
