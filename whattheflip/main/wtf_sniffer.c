@@ -93,14 +93,13 @@ static volatile uint8_t  s_i2c_work_buf[I2C_FRAME_MAX_BYTES];
 static volatile uint32_t s_i2c_start_us  = 0U;
 static volatile uint8_t  s_i2c_last_reg  = 0U;
 
-/* Decoded GY-511 (LSM303DLHC) IMU Values from Passive Bus Capture */
-static volatile int16_t s_imu_ax = -28;
-static volatile int16_t s_imu_ay = 54;
-static volatile int16_t s_imu_az = 981;
-static volatile int16_t s_imu_mx = -305;
-static volatile int16_t s_imu_my = 52;
-static volatile int16_t s_imu_mz = 61;
-
+/* Decoded GY-511 (LSM303DLHC) IMU Values from Passive Bus Capture (no faux fallback) */
+static volatile int16_t s_imu_ax = 0;
+static volatile int16_t s_imu_ay = 0;
+static volatile int16_t s_imu_az = 0;
+static volatile int16_t s_imu_mx = 0;
+static volatile int16_t s_imu_my = 0;
+static volatile int16_t s_imu_mz = 0;
 /* IRAM ISR on Probe 2 (SDA, GPIO6): Detects START and STOP conditions when SCL is HIGH */
 static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
 {

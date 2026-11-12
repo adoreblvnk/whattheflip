@@ -125,6 +125,7 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
             } else if (c == 'U' || c == 'u') {
                 wtf_fuzzer_inject_uart();
             } else if (c == 'A' || c == 'a') {
+                wtf_fuzzer_inject_i2c_ack();
             } else if (c == 'S' || c == 's') {
                 wtf_fuzzer_inject_i2c_stretch();
             } else if (c == 'W' || c == 'w') {
@@ -407,7 +408,7 @@ static int format_telemetry_json(char *json_buf, size_t max_len)
     uint8_t zigbee_ch = wtf_sniffer_get_154_channel();
     const char *tool_mode = wtf_discovery_get_tool_mode_str();
     bool disc_locked  = wtf_discovery_get_manual_lock();
-    int16_t ax = 0, ay = 0, az = 980, mx = -305, my = 52, mz = 61;
+    int16_t ax = 0, ay = 0, az = 0, mx = 0, my = 0, mz = 0;
     wtf_sniffer_get_i2c_imu(&ax, &ay, &az, &mx, &my, &mz);
 
     int8_t iris_rssi = wtf_sniffer_get_iris_rssi();

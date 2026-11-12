@@ -38,8 +38,8 @@ const pcapSize           = van.state(24);
 const pcapSyncedBytes    = van.state(0);
 
 // Iris Wireless Victim Proximity & OTA State
-const irisRssi           = van.state(-38);
-const irisVerified       = van.state(true);
+const irisRssi           = van.state(null);
+const irisVerified       = van.state(false);
 const irisRate           = van.state("2 Hz");
 // GY-511 IMU Sensor & Animation
 const accelX             = van.state(null);
@@ -176,8 +176,8 @@ function selectZigbeeChannel(ch) {
   zigbeeChannel.val = ch;
   let freq = 2405 + 5 * (ch - 11);
   fetch("/cmd?zch=" + ch, { method: "POST" })
-    .then(() => showToast(`802.15.4 Radio: Locked to Ch ${ch} (${freq} MHz)`))
-    .catch(() => showToast(`802.15.4 Radio: Locked to Ch ${ch} (${freq} MHz)`));
+    .then(() => showToast(`Zigbee Radio: Locked to Ch ${ch} (${freq} MHz)`))
+    .catch(() => showToast(`Zigbee Radio: Locked to Ch ${ch} (${freq} MHz)`));
 }
 
 
@@ -232,8 +232,8 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
   let tagClass      = "uart";
   let chan          = `Probe ${probeId}`;
   let summary       = "";
-  let inboundAscii  = "HESTIA:128:FF7F";
-  let outboundAscii = "HESTIA:128:FF7F";
+  let inboundAscii  = "";
+  let outboundAscii = "";
   let isFault       = false;
 
   if (protoId === 1) {
@@ -245,9 +245,8 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
       if (body[i] >= 32 && body[i] <= 126) ascii += String.fromCharCode(body[i]);
     }
     clientTotalUartBits += Math.max(body.length * 10, 160);
-    inboundAscii  = ascii || "HESTIA:128:FF7F";
+    inboundAscii  = ascii;
     outboundAscii = inboundAscii;
-
     let m = ascii.match(/HESTIA:(\d+):([0-9A-Fa-f]{1,4})/);
     if (m) {
       let ctr     = parseInt(m[1], 10) >>> 0;
@@ -514,52 +513,58 @@ function TopHeaderBar() {
   return div({ class: "top-cmd-bar" },
     div({ class: "brand-cluster" },
       span({ class: "brand-logo" }, "WHATTHEFLIP"),
-      span({ class: "mono", style: "font-size:11px;color:var(--proto-uart);font-weight:700" }, () => `BER: ${berPct.val}`),
-      span({ class: "mono", style: () => `font-size:10px;font-weight:700;color:${uptimeS.val > 0 ? 'var(--success)' : 'var(--error)'}'` },
-        () => uptimeS.val > 0 ? `● HW LIVE (${uptimeS.val}s)` : `● HW OFFLINE`)
+      span({ class: "mono", style: "font-size:13px;color:var(--proto-uart);font-weight:700" }, () => `BER: ${berPct.val}`),
+      span({ class: "mono", style: () => `font-size:12px;font-weight:700;color:${uptimeS.val > 0 ? 'var(--proto-uart)' : 'var(--state-glitch)'}` },
+        () => uptimeS.val > 0 ? `● LIVE (${uptimeS.val}s)` : `● OFFLINE`)
     ),
     div({ class: "injector-cluster" },
       button({
         class: "cmd-btn glitch",
+        title: "Inject 10 µs UART bit-flip on Row 13 across R1 220 Ω (Probe 0)",
         onclick: () => { activeInspTab.val = "WAVE"; triggerHardwareCommand("U", "Injected 10 µs UART bit-flip into Row 13 across R1 220 Ω", "UART"); }
-      }, "⚡ 10µs UART Glitch (Row 13)"),
+      }, "⚡ UART Glitch"),
       button({
         class: "cmd-btn glitch",
+        title: "Inject 50 µs I²C 9th-clock ACK-kill on Row 58 SDA (Probe 2)",
         onclick: () => { activeInspTab.val = "I2C_TOK"; triggerHardwareCommand("A", "Injected 50 µs I2C 9th-clock ACK-kill on Row 58 -> Daphne 9-clk recovery", "I2C_ACK"); }
-      }, "💥 50µs I2C ACK-Kill (Row 58)"),
+      }, "💥 I²C ACK-Kill"),
       button({
         class: "cmd-btn warn",
+        title: "Inject 50 µs I²C SCL clock-stretch on Row 55 (Probe 3)",
         onclick: () => { activeInspTab.val = "I2C_TOK"; triggerHardwareCommand("S", "Injected 50 µs SCL clock-stretch on Row 55", "I2C_STRETCH"); }
-      }, "⏱ 50µs I2C Stretch (Row 55)"),
+      }, "⏱ I²C Stretch"),
       button({
         class: "cmd-btn rf-btn",
-        onclick: () => { activeInspTab.val = "RF_RADAR"; triggerHardwareCommand("W", "Targeted 802.15.4 burst strictly to Iris BSSID 02:00:00:00:00:03 on Ch 15", "RF"); }
-      }, "📡 802.15.4 Jam (Ch 15)")
+        title: "Targeted Zigbee jam burst to Iris (02:00:00:00:00:03) on Ch 15",
+        onclick: () => { activeInspTab.val = "RF_RADAR"; triggerHardwareCommand("W", "Targeted Zigbee burst strictly to Iris BSSID 02:00:00:00:00:03 on Ch 15", "RF"); }
+      }, "📡 Zigbee Jam")
     ),
     div({ class: "safety-cluster" },
       button({
         class: "cmd-btn",
+        title: "Reset error counters and BER baseline",
         onclick: () => {
           triggerHardwareCommand("R", "Reset to clean 0.000% BER baseline.");
           safetyState.val = "ARMED";
           corruptedCount.val = 0;
           berPct.val = "0.000%";
         }
-      }, "Reset Baseline"),
+      }, "Reset"),
       () => safetyState.val === "ABORTED"
         ? button({
             class: "cmd-btn rearm",
             onclick: () => { triggerHardwareCommand("R", "Probes re-armed"); safetyState.val = "ARMED"; }
-          }, "RE-ARM PROBES")
+          }, "Re-Arm")
         : button({
             class: "cmd-btn estop",
+            title: "Hardware GPIO9 E-Stop: float all probes in < 200 ns",
             onclick: () => { triggerHardwareCommand("E", "GPIO9 E-STOP: All probes floated in < 200 ns (FR-7)"); safetyState.val = "ABORTED"; }
-          }, "🛑 E-STOP (<200ns)"),
+          }, "🛑 E-Stop"),
       button({
         class: "cmd-btn",
         onclick: () => document.getElementById("pcap-file-input").click(),
-        title: "Load and replay offline .pcap file"
-      }, "📂 Replay .pcap"),
+        title: "Load and replay offline capture file"
+      }, "📂 Replay"),
       input({
         type: "file",
         id: "pcap-file-input",
@@ -567,36 +572,34 @@ function TopHeaderBar() {
         style: "display:none",
         onchange: handlePcapFileUpload
       }),
-      a({ href: "/capture.pcap", download: "capture.pcap", class: "cmd-btn pcap-dl" }, "⬇ .pcap")
+      a({ href: "/capture.pcap", download: "capture.pcap", class: "cmd-btn pcap-dl", title: "Download capture file" }, "⬇ Export")
     )
   );
 }
 function ToolBeltBar() {
   const tools = [
-    { id: "AUTO", label: "🔍 Auto-Discovery", cls: "tool-auto" },
-    { id: "UART", label: "⚡ UART Glitcher", cls: "tool-uart" },
-    { id: "I2C", label: "🎛️ I2C Hijacker", cls: "tool-i2c" },
-    { id: "WIFI", label: "📡 Wi-Fi 6 Sniffer", cls: "tool-wifi" },
-    { id: "ZIGBEE", label: "🐝 Zigbee 802.15.4", cls: "tool-zigbee" },
-    { id: "EXPLOIT", label: "🎯 Exploit Suite", cls: "tool-exploit" }
+    { id: "AUTO", label: "🔍 Auto", cls: "tool-auto" },
+    { id: "UART", label: "⚡ UART", cls: "tool-uart" },
+    { id: "I2C", label: "🎛️ I²C", cls: "tool-i2c" },
+    { id: "WIFI", label: "📡 Wi-Fi", cls: "tool-wifi" },
+    { id: "ZIGBEE", label: "🐝 Zigbee", cls: "tool-zigbee" },
+    { id: "EXPLOIT", label: "🎯 Exploit", cls: "tool-exploit" }
   ];
 
   return div({ class: "tool-belt-bar" },
     div({ class: "tool-cluster" },
-      span({ class: "mono", style: "font-size:11px;font-weight:800;color:var(--fg-muted);margin-right:4px" }, "TOOL ENGINE:"),
       tools.map(t => button({
         class: () => "tool-btn " + t.cls + (toolMode.val === t.id ? " active" : ""),
         onclick: () => selectToolMode(t.id)
       }, t.label))
     ),
     div({ class: "tool-cluster" },
-      span({ class: "mono", style: "font-size:11px;color:var(--fg-muted);margin-right:2px" }, "AUTO-DETECT GATE:"),
       button({
         class: () => "lock-gate-btn " + (discoveryLocked.val ? "locked" : "unlocked"),
         onclick: toggleDiscoveryLock,
-        title: "Click to toggle manual capture override lock"
+        title: "Toggle manual capture override lock"
       },
-        () => discoveryLocked.val ? "🔒 OVERRIDE LOCKED" : "🔓 AUTO-DETECT ACTIVE"
+        () => discoveryLocked.val ? "🔒 Locked" : "🔓 Auto-Detect"
       )
     )
   );
@@ -770,9 +773,8 @@ function BreadboardCanvas() {
             rect({ class: "node-box", x: 475, y: 212, width: 195, height: 48, rx: 4, fill: "#ffffff", stroke: "rgba(124,58,237,0.28)", "stroke-width": 1.2 }),
             text({ x: 485, y: 231, fill: "var(--proto-rf)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "IRIS (WIRELESS)"),
             text({ x: 485, y: 248, fill: () => irisVerified.val ? "var(--proto-uart)" : "var(--fg-dim)", "font-size": 10, "font-family": "monospace", "font-weight": "bold" },
-              () => irisVerified.val ? `Ch ${zigbeeChannel.val} (${irisRate.val} • ${irisRssi.val} dBm)` : `OFFLINE`)
+              () => irisVerified.val && irisRssi.val !== null ? `Ch ${zigbeeChannel.val} (${irisRate.val} • ${irisRssi.val} dBm)` : `OFFLINE`)
           ),
-
           // Single Simplex UART PDU Envelope traveling left-to-right (Hestia -> R1 -> Daphne)
           uartLive ? g({
             class: "pdu-pill", transform: `translate(${pduUartX}, 46)`,
@@ -841,409 +843,374 @@ function generateDiscreteSquarePath(bits, startX, bitW, yHigh, yLow) {
 }
 
 function WaveformScopeTab() {
-  let p = selectedPacket.val;
-  let inStr  = (p && p.inboundAscii) ? p.inboundAscii : "HESTIA:128:FF7F";
-  let outStr = (p && p.outboundAscii) ? p.outboundAscii : (corruptedCount.val > 0 ? "HESTIA:128:F77F" : inStr);
-  let sampleByteIn  = inStr.charCodeAt(Math.min(11, inStr.length - 1)) || 0x46; // e.g. 'F' = 0x46 = 01000110b
-  let isCorrupt     = (p && p.tagClass === "fault") || activeGlitchBus.val === "UART";
-  let sampleByteOut = isCorrupt ? (sampleByteIn & ~0x08) : sampleByteIn; // Bit D3 flipped from 1 to 0
+  return () => {
+    let p = selectedPacket.val;
+    let latestUartPkt = packets.val.find(pkt => pkt.proto === "UART");
+    let refPkt = (p && p.proto === "UART") ? p : latestUartPkt;
+    let inStr  = (refPkt && refPkt.inboundAscii) ? refPkt.inboundAscii : (latestUartLabel.val || "AWAITING UART");
+    let isCorrupt = (p && p.tagClass === "fault") || activeGlitchBus.val === "UART" || (refPkt && refPkt.isFault);
+    let outStr = (refPkt && refPkt.outboundAscii) ? refPkt.outboundAscii : inStr;
+    if (activeGlitchBus.val === "UART" && outStr === inStr && inStr.includes(":")) {
+      outStr = inStr.slice(0, -4) + "F771";
+    }
+    let sampleByteIn  = inStr.charCodeAt(Math.min(11, inStr.length - 1)) || 0x46;
+    let sampleByteOut = isCorrupt ? (sampleByteIn ^ 0x08) : sampleByteIn;
 
-  let bitsIn  = charToBits8N1(sampleByteIn);
-  let bitsOut = charToBits8N1(sampleByteOut);
+    let bitsIn  = charToBits8N1(sampleByteIn);
+    let bitsOut = charToBits8N1(sampleByteOut);
+    let uartP1CleanBits = [1, ...bitsIn, 1];
 
-  // 12-bit sequence: [IDLE(1), START(0), D0..D7, STOP(1), IDLE(1)]
-  let uartP1CleanBits = [1, ...bitsIn, 1];
-  let uartDaphneBits  = [1, ...bitsOut, 1];
+    let p0GlitchBits = [1, 1];
+    for (let b = 0; b < 8; b++) {
+      p0GlitchBits.push(b === 3 && isCorrupt ? 0 : 1);
+    }
+    p0GlitchBits.push(1, 1);
 
-  // Probe 0 Glitch Injector: HIGH-Z (3.3V) except during D3 active glitch pulse (0.0V for 10µs)
-  let p0GlitchBits = [1, 1];
-  for (let b = 0; b < 8; b++) {
-    p0GlitchBits.push(b === 3 && isCorrupt ? 0 : 1);
-  }
-  p0GlitchBits.push(1, 1);
+    let isI2cGlitch = activeGlitchBus.val === "I2C_ACK" || activeGlitchBus.val === "I2C_STRETCH";
+    let p2SdaBits = [1, 0, 0, 0, 1, 1, 0, 0, 1, 0, isI2cGlitch ? 1 : 0, 1];
+    let p3SclBits = [1, 1, 0, 1, 0, 1, 0, 1, 0, 1, isI2cGlitch ? 0 : 1, 1];
 
-  // Probe 2 (SDA) and Probe 3 (SCL) bits for LSM303DLHC (Addr 0x19 W -> 0x32, Reg 0xA8)
-  let isI2cGlitch = activeGlitchBus.val === "I2C_ACK" || activeGlitchBus.val === "I2C_STRETCH";
-  let p2SdaBits = [1, 0, 0, 0, 1, 1, 0, 0, 1, 0, isI2cGlitch ? 1 : 0, 1]; // START, 0x19W, ACK(0)/NACK(1), STOP
-  let p3SclBits = [1, 1, 0, 1, 0, 1, 0, 1, 0, 1, isI2cGlitch ? 0 : 1, 1]; // 400 kHz SCL clock / stretch
+    let startX = 100;
+    let bitW   = 33;
+    let totalBits = 12;
+    let sShift = probeShift.val;
+    let filt   = scopeFilter.val;
+    let prState = liveProbeState.val;
 
-  let startX = 100;
-  let bitW   = 33;
-  let totalBits = 12;
+    function getShiftedPath(baseBits, yHigh, yLow) {
+      let len = baseBits.length;
+      let rotated = baseBits.map((_, i) => baseBits[(i + sShift) % len]);
+      return generateDiscreteSquarePath(rotated, startX, bitW, yHigh, yLow);
+    }
 
-  function getShiftedPath(baseBits, yHigh, yLow) {
-    let s = probeShift.val;
-    let len = baseBits.length;
-    let rotated = baseBits.map((_, i) => baseBits[(i + s) % len]);
-    return generateDiscreteSquarePath(rotated, startX, bitW, yHigh, yLow);
-  }
+    let bitLabels = [
+      { label: "IDLE", sub: "3.3V", isStart: false, isGlitch: false, isStop: false },
+      { label: "START", sub: "0.0V", isStart: true, isGlitch: false, isStop: false }
+    ];
+    for (let b = 0; b < 8; b++) {
+      let bitVal = (sampleByteIn >> b) & 1;
+      let flipped = b === 3 && isCorrupt;
+      bitLabels.push({
+        label: flipped ? "⚡D3:0" : `D${b}:${bitVal}`,
+        sub: flipped ? "0.0V" : (bitVal ? "3.3V" : "0.0V"),
+        isStart: false,
+        isGlitch: flipped,
+        isStop: false
+      });
+    }
+    bitLabels.push({ label: isCorrupt ? "CRC ERR" : "STOP", sub: "3.3V", isStart: false, isGlitch: isCorrupt, isStop: true });
+    bitLabels.push({ label: "IDLE", sub: "3.3V", isStart: false, isGlitch: false, isStop: false });
 
-  let bitLabels = [
-    { label: "IDLE", sub: "3.3V", isStart: false, isGlitch: false, isStop: false },
-    { label: "START", sub: "0.0V", isStart: true, isGlitch: false, isStop: false }
-  ];
-  for (let b = 0; b < 8; b++) {
-    let bitVal = (sampleByteIn >> b) & 1;
-    let flipped = b === 3 && isCorrupt;
-    bitLabels.push({
-      label: flipped ? "⚡D3:0" : `D${b}:${bitVal}`,
-      sub: flipped ? "0.0V" : (bitVal ? "3.3V" : "0.0V"),
-      isStart: false,
-      isGlitch: flipped,
-      isStop: false
-    });
-  }
-  bitLabels.push({ label: isCorrupt ? "CRC ERR" : "STOP", sub: "3.3V", isStart: false, isGlitch: isCorrupt, isStop: true });
-  bitLabels.push({ label: "IDLE", sub: "3.3V", isStart: false, isGlitch: false, isStop: false });
-
-  return div({ style: "display:flex;flex-direction:column;gap:8px" },
-    div({ class: "insp-card" },
-      div({ class: "insp-card-title" },
-        span("DIGITAL LOGIC SCOPE // LIVE HARDWARE GPIO PROBING"),
-        span({ class: "mono", style: isCorrupt ? "color:var(--state-glitch);font-weight:800" : "color:var(--proto-uart);font-weight:700" },
-          isCorrupt ? "⚡ 10.0 µs GLITCH ACTIVE (ROW 13)" : "● ALL 4 PROBES LIVE (3.3V CMOS)")
-      ),
-
-      div({ class: "scope-header-bar" },
-        div({ style: "display:flex;gap:5px" },
-          button({
-            class: () => "cmd-btn" + (scopeFilter.val === "ALL" ? " active" : ""),
-            style: "padding:2px 8px;font-size:11px",
-            onclick: () => scopeFilter.val = "ALL"
-          }, "All Probes (P0–P3)"),
-          button({
-            class: () => "cmd-btn" + (scopeFilter.val === "UART" ? " active" : ""),
-            style: "padding:2px 8px;font-size:11px",
-            onclick: () => scopeFilter.val = "UART"
-          }, "UART (P1 / P0)"),
-          button({
-            class: () => "cmd-btn" + (scopeFilter.val === "I2C" ? " active" : ""),
-            style: "padding:2px 8px;font-size:11px",
-            onclick: () => scopeFilter.val = "I2C"
-          }, "I²C (P2 / P3)")
+    return div({ style: "display:flex;flex-direction:column;gap:8px" },
+      div({ class: "insp-card" },
+        div({ class: "insp-card-title" },
+          span("LOGIC SCOPE"),
+          span({ class: "mono", style: isCorrupt ? "color:var(--state-glitch);font-weight:800" : "color:var(--proto-uart);font-weight:700" },
+            isCorrupt ? `⚡ ROW 13 GLITCH ACTIVE (Faults: ${corruptedCount.val})` : `● Row 22→13 (${uartPkts.val} UART | ${i2cPkts.val} I²C)`)
         ),
-        div({ style: "display:flex;gap:6px" },
-          span({ class: "scope-chip" },
-            span({ class: () => "scope-led " + (liveProbeState.val.p1 ? "high" : "low") }),
-            "P1 ", strong({ style: "display:inline-block;width:32px;text-align:center" }, () => liveProbeState.val.p1 ? "3.3V" : "0.0V")
+
+        div({ class: "scope-header-bar" },
+          div({ style: "display:flex;gap:5px" },
+            button({
+              class: "cmd-btn" + (filt === "ALL" ? " active" : ""),
+              style: "padding:3px 8px;font-size:12px",
+              onclick: () => scopeFilter.val = "ALL"
+            }, "All"),
+            button({
+              class: "cmd-btn" + (filt === "UART" ? " active" : ""),
+              style: "padding:3px 8px;font-size:12px",
+              onclick: () => scopeFilter.val = "UART"
+            }, "UART"),
+            button({
+              class: "cmd-btn" + (filt === "I2C" ? " active" : ""),
+              style: "padding:3px 8px;font-size:12px",
+              onclick: () => scopeFilter.val = "I2C"
+            }, "I²C")
           ),
-          span({ class: "scope-chip" },
-            span({ class: () => "scope-led " + (liveProbeState.val.p0 === 0 ? "pulse" : "high") }),
-            "P0 ", strong({ style: "display:inline-block;width:32px;text-align:center" }, () => liveProbeState.val.p0 === 0 ? "PULS" : "IDLE")
-          ),
-          span({ class: "scope-chip" },
-            span({ class: () => "scope-led " + (liveProbeState.val.p2 ? "high" : "low") }),
-            "P2 ", strong({ style: "display:inline-block;width:32px;text-align:center" }, () => liveProbeState.val.p2 ? "3.3V" : "0.0V")
-          ),
-          span({ class: "scope-chip" },
-            span({ class: () => "scope-led " + (liveProbeState.val.p3 ? "high" : "low") }),
-            "P3 ", strong({ style: "display:inline-block;width:32px;text-align:center" }, () => liveProbeState.val.p3 ? "3.3V" : "0.0V")
+          div({ style: "display:flex;gap:5px" },
+            span({ class: "scope-chip" },
+              span({ class: "scope-led " + (prState.p1 ? "high" : "low") }),
+              "P1 ", strong(prState.p1 ? "3.3V" : "0.0V")
+            ),
+            span({ class: "scope-chip" },
+              span({ class: "scope-led " + (prState.p0 === 0 || isCorrupt ? "pulse" : "high") }),
+              "P0 ", strong((prState.p0 === 0 || isCorrupt) ? "LOW" : "IDLE")
+            ),
+            span({ class: "scope-chip" },
+              span({ class: "scope-led " + (prState.p2 ? "high" : "low") }),
+              "P2 ", strong(prState.p2 ? "3.3V" : "0.0V")
+            ),
+            span({ class: "scope-chip" },
+              span({ class: "scope-led " + (prState.p3 ? "high" : "low") }),
+              "P3 ", strong(prState.p3 ? "3.3V" : "0.0V")
+            )
           )
+        ),
+
+        svg({ viewBox: "0 0 510 212", style: "width:100%;height:196px;background:#f8fafc;border:1px solid var(--border-strong);border-radius:3px" },
+          Array.from({ length: totalBits - 1 }).map((_, i) => {
+            let gx = startX + (i + 1) * bitW;
+            return line({ x1: gx, y1: 14, x2: gx, y2: 176, stroke: "#e2e8f0", "stroke-width": 1, "stroke-dasharray": "2 2" });
+          }),
+          text({ x: startX + 1.5 * bitW, y: 10, fill: "#64748b", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle" }, "8.68 µs / bit"),
+
+          isCorrupt ? rect({ x: startX + 5 * bitW, y: 14, width: bitW, height: 162, fill: "rgba(225,29,72,0.12)", stroke: "var(--state-glitch)", "stroke-width": 1.2, "stroke-dasharray": "3 3" }) : null,
+          isCorrupt ? text({ x: startX + 5.5 * bitW, y: 10, fill: "var(--state-glitch)", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "⚡ 10µs GLITCH") : null,
+
+          // Channel 1: P1 Row 22 Clean
+          text({ x: 6, y: 31, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "bold" }, "P1 Row 22"),
+          text({ x: 6, y: 43, fill: "#64748b", "font-size": 8.5, "font-family": "monospace" }, "Clean TX"),
+          polyline({ points: getShiftedPath(uartP1CleanBits, 22, 44), fill: "none", stroke: "var(--proto-uart)", "stroke-width": 2 }),
+
+          // Channel 2: P0 Row 13 Glitch
+          text({ x: 6, y: 73, fill: isCorrupt ? "var(--state-glitch)" : "var(--state-warn)", "font-size": 10, "font-family": "monospace", "font-weight": "bold" }, "P0 Row 13"),
+          text({ x: 6, y: 85, fill: isCorrupt ? "var(--state-glitch)" : "#64748b", "font-size": 8.5, "font-family": "monospace" }, isCorrupt ? "10µs Pull LOW" : "High-Z Idle"),
+          polyline({ points: getShiftedPath(p0GlitchBits, 64, 86), fill: "none", stroke: isCorrupt ? "var(--state-glitch)" : "var(--state-warn)", "stroke-width": isCorrupt ? 2.6 : 1.8 }),
+
+          // Channel 3: P2 Row 58 SDA
+          text({ x: 6, y: 115, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "font-weight": "bold" }, "P2 Row 58"),
+          text({ x: 6, y: 127, fill: "#64748b", "font-size": 8.5, "font-family": "monospace" }, "I²C SDA"),
+          polyline({ points: getShiftedPath(p2SdaBits, 106, 128), fill: "none", stroke: "var(--proto-i2c)", "stroke-width": 2 }),
+
+          // Channel 4: P3 Row 55 SCL
+          text({ x: 6, y: 157, fill: "#0284c7", "font-size": 10, "font-family": "monospace", "font-weight": "bold" }, "P3 Row 55"),
+          text({ x: 6, y: 169, fill: "#64748b", "font-size": 8.5, "font-family": "monospace" }, "I²C SCL"),
+          polyline({ points: getShiftedPath(p3SclBits, 148, 170), fill: "none", stroke: "#0284c7", "stroke-width": 2 }),
+
+          bitLabels.map((item, idx) => {
+            let bx = startX + idx * bitW + 1;
+            let bw = bitW - 2;
+            let isG = item.isGlitch;
+            let bg = isG ? "var(--state-glitch-bg)"
+                   : item.isStart ? "var(--state-warn-bg)"
+                   : item.isStop ? (isCorrupt ? "var(--state-glitch-bg)" : "var(--proto-uart-bg)")
+                   : "var(--proto-i2c-bg)";
+            let fColor = isG ? "var(--state-glitch)"
+                       : item.isStart ? "var(--state-warn)"
+                       : item.isStop ? (isCorrupt ? "var(--state-glitch)" : "var(--proto-uart)")
+                       : "var(--proto-i2c)";
+            return g(
+              rect({ x: bx, y: 180, width: bw, height: 26, rx: 2, fill: bg }),
+              text({ x: bx + bw / 2, y: 193, fill: fColor, "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, item.label),
+              text({ x: bx + bw / 2, y: 203, fill: "var(--fg-muted)", "font-size": 7.5, "font-family": "monospace", "text-anchor": "middle" }, item.sub)
+            );
+          })
         )
       ),
 
-      // 4-Channel Live Digital Logic Scope SVG
-      svg({ viewBox: "0 0 510 216", style: "width:100%;height:216px;background:#f8fafc;border:1px solid var(--border-strong);border-radius:3px" },
-        // Timing grid & bit boundary lines
-        // Timing grid internal bit boundary dividers
-        Array.from({ length: totalBits - 1 }).map((_, i) => {
-          let gx = startX + (i + 1) * bitW;
-          return line({ x1: gx, y1: 14, x2: gx, y2: 178, stroke: "#e2e8f0", "stroke-width": 1, "stroke-dasharray": "2 2" });
-        }),
-        // Measurement Cursor (Δt = 8.68 µs / bit-time)
-        line({ x1: startX + bitW, y1: 10, x2: startX + 2 * bitW, y2: 10, stroke: "#64748b", "stroke-width": 1.2 }),
-        line({ x1: startX + bitW, y1: 6, x2: startX + bitW, y2: 14, stroke: "#64748b", "stroke-width": 1.2 }),
-        line({ x1: startX + 2 * bitW, y1: 6, x2: startX + 2 * bitW, y2: 14, stroke: "#64748b", "stroke-width": 1.2 }),
-        text({ x: startX + 1.5 * bitW, y: 8, fill: "#64748b", "font-size": 8, "font-family": "monospace", "text-anchor": "middle" }, "Δt = 8.68 µs (115200 8N1)"),
-
-        // Glitch pulse cursor across D3 bit column
-        isCorrupt ? rect({ x: startX + 5 * bitW, y: 14, width: bitW, height: 164, fill: "rgba(225,29,72,0.08)", stroke: "var(--state-glitch)", "stroke-width": 1, "stroke-dasharray": "3 3" }) : null,
-        isCorrupt ? text({ x: startX + 5.5 * bitW, y: 8, fill: "var(--state-glitch)", "font-size": 8, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "⚡ 10.0 µs GLITCH") : null,
-
-        // Channel 1: Probe 1 (GPIO5 IN) - UART Sniffer (Clean Row 22)
-        text({ x: 6, y: 31, fill: "var(--proto-uart)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold" }, "P1: GPIO5 [IN]"),
-        text({ x: 6, y: 43, fill: "#94a3b8", "font-size": 8, "font-family": "monospace" }, "UART1 Clean RX"),
-        text({ x: 80, y: 25, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "3.3V"),
-        text({ x: 80, y: 47, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "0.0V"),
-        line({ x1: startX - 4, y1: 22, x2: startX + totalBits * bitW, y2: 22, stroke: "#e2e8f0", "stroke-dasharray": "2 2" }),
-        line({ x1: startX - 4, y1: 44, x2: startX + totalBits * bitW, y2: 44, stroke: "#cbd5e1", "stroke-width": 1 }),
-        polyline({ points: () => getShiftedPath(uartP1CleanBits, 22, 44), fill: "none", stroke: "var(--proto-uart)", "stroke-width": 2 }),
-
-        // Channel 2: Probe 0 (GPIO4 OUT) - UART Glitcher (Row 13)
-        text({ x: 6, y: 73, fill: isCorrupt ? "var(--state-glitch)" : "var(--state-warn)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold" }, "P0: GPIO4 [OUT]"),
-        text({ x: 6, y: 85, fill: "#94a3b8", "font-size": 8, "font-family": "monospace" }, isCorrupt ? "10µs Active LOW" : "High-Z Pull-Up"),
-        text({ x: 80, y: 67, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "3.3V"),
-        text({ x: 80, y: 89, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "0.0V"),
-        line({ x1: startX - 4, y1: 64, x2: startX + totalBits * bitW, y2: 64, stroke: "#e2e8f0", "stroke-dasharray": "2 2" }),
-        line({ x1: startX - 4, y1: 86, x2: startX + totalBits * bitW, y2: 86, stroke: "#cbd5e1", "stroke-width": 1 }),
-        polyline({ points: () => getShiftedPath(p0GlitchBits, 64, 86), fill: "none", stroke: isCorrupt ? "var(--state-glitch)" : "var(--state-warn)", "stroke-width": isCorrupt ? 2.5 : 1.8 }),
-
-        // Channel 3: Probe 2 (GPIO6 IN/OUT) - I2C SDA (Row 43)
-        text({ x: 6, y: 115, fill: "var(--proto-i2c)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold" }, "P2: GPIO6 [SDA]"),
-        text({ x: 6, y: 127, fill: "#94a3b8", "font-size": 8, "font-family": "monospace" }, "I2C0 Data / ACK"),
-        text({ x: 80, y: 109, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "3.3V"),
-        text({ x: 80, y: 131, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "0.0V"),
-        line({ x1: startX - 4, y1: 106, x2: startX + totalBits * bitW, y2: 106, stroke: "#e2e8f0", "stroke-dasharray": "2 2" }),
-        line({ x1: startX - 4, y1: 128, x2: startX + totalBits * bitW, y2: 128, stroke: "#cbd5e1", "stroke-width": 1 }),
-        polyline({ points: () => getShiftedPath(p2SdaBits, 106, 128), fill: "none", stroke: "var(--proto-i2c)", "stroke-width": 2 }),
-
-        // Channel 4: Probe 3 (GPIO7 IN/OUT) - I2C SCL (Row 42)
-        text({ x: 6, y: 157, fill: "#0284c7", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold" }, "P3: GPIO7 [SCL]"),
-        text({ x: 6, y: 169, fill: "#94a3b8", "font-size": 8, "font-family": "monospace" }, "400 kHz Clock"),
-        text({ x: 80, y: 151, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "3.3V"),
-        text({ x: 80, y: 173, fill: "#94a3b8", "font-size": 7.5, "font-family": "monospace" }, "0.0V"),
-        line({ x1: startX - 4, y1: 148, x2: startX + totalBits * bitW, y2: 148, stroke: "#e2e8f0", "stroke-dasharray": "2 2" }),
-        line({ x1: startX - 4, y1: 170, x2: startX + totalBits * bitW, y2: 170, stroke: "#cbd5e1", "stroke-width": 1 }),
-        polyline({ points: () => getShiftedPath(p3SclBits, 148, 170), fill: "none", stroke: "#0284c7", "stroke-width": 2 }),
-
-        // Decoded Protocol Annotation Blocks
-        bitLabels.map((item, idx) => {
-          let bx = startX + idx * bitW + 1;
-          let bw = bitW - 2;
-          let isG = item.isGlitch;
-          let bg = isG ? "var(--state-glitch-bg)"
-                 : item.isStart ? "var(--state-warn-bg)"
-                 : item.isStop ? (isCorrupt ? "var(--state-glitch-bg)" : "var(--proto-uart-bg)")
-                 : "var(--proto-i2c-bg)";
-          let bBorder = isG ? "var(--state-glitch)"
-                      : item.isStart ? "var(--state-warn-border)"
-                      : item.isStop ? (isCorrupt ? "var(--state-glitch)" : "var(--proto-uart-border)")
-                      : "var(--proto-i2c-border)";
-          let fColor = isG ? "var(--state-glitch)"
-                     : item.isStart ? "var(--state-warn)"
-                     : item.isStop ? (isCorrupt ? "var(--state-glitch)" : "var(--proto-uart)")
-                     : "var(--proto-i2c)";
-          return g(
-            rect({ x: bx, y: 182, width: bw, height: 26, rx: 2, fill: bg, stroke: bBorder, "stroke-width": isG ? 1.5 : 1 }),
-            text({ x: bx + bw / 2, y: 194, fill: fColor, "font-size": 8, "font-family": "monospace", "text-anchor": "middle", "font-weight": (isG || item.isStart || item.isStop) ? "bold" : "normal" }, item.label),
-            text({ x: bx + bw / 2, y: 204, fill: "var(--fg-muted)", "font-size": 7, "font-family": "monospace", "text-anchor": "middle" }, item.sub)
-          );
-        })
-      )
-    ),
-
-    // Card 2: PDU Bit-Diff & Inversion Analysis
-    div({ class: "insp-card" },
-      div({ class: "insp-card-title" },
-        span("PDU BIT-DIFF & HARDWARE FAULT INJECTION MECHANISM"),
-        span({ style: isCorrupt ? "color:var(--state-glitch);font-weight:700" : "color:var(--proto-uart);font-weight:700" },
-          isCorrupt ? "⚡ BIT D3 FLIPPED (3.3V -> 0.0V via 15 mA sink)" : "✓ 0 BIT INVERSIONS")
-      ),
-      div({ class: "diff-grid" },
-        div({ class: "diff-box" },
-          div({ style: "color:var(--proto-uart);font-weight:700" }, "P1 (GPIO5 Clean Tap / Row 22)"),
-          div({ style: "margin-top:2px" }, `${inStr} (Char: '${String.fromCharCode(sampleByteIn)}' = 0x${sampleByteIn.toString(16).toUpperCase()})`),
-          div({ class: "bit-row" },
-            bitsIn.map((bVal, idx) => span({ class: "bit-cell" },
-              idx === 0 ? "S:0" : (idx === 9 ? "P:1" : `D${idx - 1}:${bVal}`)
-            ))
-          )
+      div({ class: "insp-card" },
+        div({ class: "insp-card-title" },
+          span("ROW 22 vs ROW 13 BIT-DIFF"),
+          span({ style: isCorrupt ? "color:var(--state-glitch);font-weight:700" : "color:var(--proto-uart);font-weight:700" },
+            isCorrupt ? "⚡ BIT D3 INVERTED (Row 13 → 0.0V)" : "✓ 0 INVERSIONS")
         ),
-        div({ class: "diff-box" },
-          div({ style: isCorrupt ? "color:var(--state-glitch);font-weight:700" : "color:var(--proto-uart);font-weight:700" },
-            "P0 (GPIO4 Glitched Output / Row 13)"),
-          div({ style: "margin-top:2px" }, `${outStr} (Char: '${String.fromCharCode(sampleByteOut)}' = 0x${sampleByteOut.toString(16).toUpperCase()})`),
-          div({ class: "bit-row" },
-            bitsOut.map((bVal, idx) => {
-              let diff = bVal !== bitsIn[idx];
-              return span({ class: "bit-cell" + (diff ? " flipped" : "") },
+        div({ class: "diff-grid" },
+          div({ class: "diff-box" },
+            div({ style: "color:var(--proto-uart);font-weight:700" }, "Row 22 Clean (P1 GPIO5)"),
+            div({ style: "margin-top:2px" }, `${inStr} ('${String.fromCharCode(sampleByteIn)}' = 0x${sampleByteIn.toString(16).toUpperCase()})`),
+            div({ class: "bit-row" },
+              bitsIn.map((bVal, idx) => span({ class: "bit-cell" },
                 idx === 0 ? "S:0" : (idx === 9 ? "P:1" : `D${idx - 1}:${bVal}`)
-              );
-            })
+              ))
+            )
+          ),
+          div({ class: "diff-box" },
+            div({ style: isCorrupt ? "color:var(--state-glitch);font-weight:700" : "color:var(--proto-uart);font-weight:700" },
+              "Row 13 Glitched (P0 GPIO4)"),
+            div({ style: "margin-top:2px" }, `${outStr} ('${String.fromCharCode(sampleByteOut)}' = 0x${sampleByteOut.toString(16).toUpperCase()})`),
+            div({ class: "bit-row" },
+              bitsOut.map((bVal, idx) => {
+                let diff = bVal !== bitsIn[idx];
+                return span({ class: "bit-cell" + (diff ? " flipped" : "") },
+                  idx === 0 ? "S:0" : (idx === 9 ? "P:1" : `D${idx - 1}:${bVal}`)
+                );
+              })
+            )
           )
         )
-      ),
-    )
-  );
+      )
+    );
+  };
 }
 
 function I2cTokensTab() {
-  let isGlitch = activeGlitchBus.val === "I2C_ACK" || activeGlitchBus.val === "I2C_STRETCH";
+  return () => {
+    let isGlitch = activeGlitchBus.val === "I2C_ACK" || activeGlitchBus.val === "I2C_STRETCH";
+    let regHex   = rawRegHex.val;
+    let ax       = accelX.val;
+    let ay       = accelY.val;
+    let az       = accelZ.val;
 
-  return div({ style: "display:flex;flex-direction:column;gap:8px" },
-    div({ class: "insp-card" },
-      div({ class: "insp-card-title" },
-        span("I²C BUS TRANSACTION TOKEN STREAM"),
-        span({ style: isGlitch ? "color:var(--state-glitch);font-weight:800" : "color:var(--proto-i2c);font-weight:700" },
-          isGlitch ? "⚡ 9th-CLK NACK DETECTED" : "✓ VALID ACK STREAM")
+    return div({ style: "display:flex;flex-direction:column;gap:8px" },
+      div({ class: "insp-card" },
+        div({ class: "insp-card-title" },
+          span("I²C TRANSACTION STREAM (ROW 55 SCL / ROW 58 SDA)"),
+          span({ style: isGlitch ? "color:var(--state-glitch);font-weight:800" : "color:var(--proto-i2c);font-weight:700" },
+            isGlitch ? "⚡ 9th-CLK NACK INJECTED" : `✓ ${i2cPkts.val} FRAMES`)
+        ),
+        div({ class: "token-stream" },
+          span({ class: "tok start" }, "START"),
+          span({ class: "tok addr" }, "0x19 W"),
+          isGlitch
+            ? span({ class: "tok nack" }, "⚡ NACK (Row 58)")
+            : span({ class: "tok ack" }, "ACK"),
+          isGlitch
+            ? span({ class: "tok rec" }, "9-CLK RECOVERY (Row 55)")
+            : span({ class: "tok data" }, "Reg 0xA8"),
+          isGlitch ? null : span({ class: "tok ack" }, "ACK"),
+          isGlitch ? null : span({ class: "tok start" }, "REP-START"),
+          isGlitch ? null : span({ class: "tok addr" }, "0x19 R"),
+          isGlitch ? null : span({ class: "tok data" }, `[${regHex}]`),
+          span({ class: "tok stop" }, "STOP")
+        ),
+        div({ style: "margin-top:6px;font-size:13px;color:var(--fg-primary)" },
+          ax !== null
+            ? span("Live GY-511 Accel: ", strong({ style: "color:var(--proto-i2c)" }, `X=${ax} mg, Y=${ay} mg, Z=${az} mg`), magStr.val ? ` • Mag: ${magStr.val}` : "")
+            : span({ style: "color:var(--fg-dim)" }, "No live GY-511 telemetry received yet.")
+        )
       ),
-      div({ class: "token-stream" },
-        span({ class: "tok start" }, "s (START)"),
-        span({ class: "tok addr" }, "32 (0x19 W)"),
-        isGlitch
-          ? span({ class: "tok nack" }, "n (NACK ⚡ 50µs ACK-KILL)")
-          : span({ class: "tok ack" }, "a (ACK)"),
-        isGlitch
-          ? span({ class: "tok rec" }, "[DAPHNE 9-CLK SCL RECOVERY]")
-          : span({ class: "tok data" }, "A8 (OUT_X_L_A | AUTO_INC)"),
-        isGlitch ? null : span({ class: "tok ack" }, "a (ACK)"),
-        isGlitch ? null : span({ class: "tok start" }, "s (REP START)"),
-        isGlitch ? null : span({ class: "tok addr" }, "33 (0x19 R)"),
-        isGlitch ? null : span({ class: "tok data" }, `[${rawRegHex.val}]`),
-        span({ class: "tok stop" }, "p (STOP)")
-      ),
-      div({ style: "margin-top:6px;font-size:11.5px;color:var(--fg-muted)" },
-        "Token Key: ", strong("s"), "=START, ", strong("32"), "=Addr 0x19 W, ", strong("a"), "=ACK (0), ", strong("n"), "=NACK (1), ", strong("p"), "=STOP"
+      div({ class: "insp-card" },
+        div({ class: "insp-card-title" },
+          span("9-CLOCK RECOVERY WAVEFORM"),
+          span({ class: "mono", style: "color:var(--proto-i2c);font-weight:700" }, "400 kHz")
+        ),
+        svg({ viewBox: "0 0 480 114", style: "width:100%;height:114px;background:#f8fafc;border:1px solid var(--border-strong);border-radius:3px" },
+          text({ x: 6, y: 24, fill: "var(--proto-i2c)", "font-size": 11, "font-family": "monospace", "font-weight": "bold" }, "SCL R55"),
+          text({ x: 6, y: 56, fill: isGlitch ? "var(--state-glitch)" : "var(--proto-i2c)", "font-size": 11, "font-family": "monospace", "font-weight": "bold" }, "SDA R58"),
+          text({ x: 6, y: 92, fill: "var(--proto-rf)", "font-size": 11, "font-family": "monospace", "font-weight": "bold" }, "State"),
+
+          polyline({ points: "75,24 82,24 82,14 90,14 90,24 98,24 98,14 106,14 106,24 114,24 114,14 122,14 122,24 130,24 130,14 138,14 138,24 146,24 146,14 154,14 154,24 162,24 162,14 170,14 170,24 178,24 178,14 186,14 186,24 194,24 194,14 202,14 202,24 234,24 234,14 244,14 244,24 254,24 254,14 264,14 264,24 274,24 274,14 284,14 284,24 294,24 294,14 304,14 304,24 314,24 314,14 324,14 324,24 334,24 334,14 344,14 344,24 354,24 354,14 364,14 364,24 374,24 374,14 384,14 384,24 394,24 394,14 404,14 404,24 414,24 414,14 424,14 424,24 460,24", fill: "none", stroke: "var(--proto-i2c)", "stroke-width": 2 }),
+
+          polyline({ points: isGlitch ? "75,56 80,56 80,45 150,45 150,56 195,56 195,45 245,45 245,56 460,56" : "75,56 80,56 80,45 150,45 150,56 195,56 195,56 208,56 215,45 460,45", fill: "none", stroke: isGlitch ? "var(--state-glitch)" : "var(--proto-i2c)", "stroke-width": isGlitch ? 3.5 : 2 }),
+
+          rect({ x: 75, y: 80, width: 36, height: 20, rx: 3, fill: "var(--state-warn-bg)" }),
+          text({ x: 93, y: 94, fill: "var(--state-warn)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "START"),
+
+          rect({ x: 114, y: 80, width: 102, height: 20, rx: 3, fill: "var(--proto-i2c-bg)" }),
+          text({ x: 165, y: 94, fill: "var(--proto-i2c)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle" }, "ADDR: 0x19 W"),
+
+          rect({ x: 220, y: 80, width: isGlitch ? 92 : 42, height: 20, rx: 3, fill: isGlitch ? "var(--state-glitch-bg)" : "var(--proto-uart-bg)" }),
+          text({ x: isGlitch ? 266 : 241, y: 94, fill: isGlitch ? "var(--state-glitch)" : "var(--proto-uart)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" },
+            isGlitch ? "⚡ NACK (50µs)" : "ACK"),
+
+          isGlitch ? rect({ x: 316, y: 80, width: 118, height: 20, rx: 3, fill: "var(--proto-i2c-bg)" }) : null,
+          isGlitch ? text({ x: 375, y: 94, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "9-CLK RECOVERY") : null,
+
+          rect({ x: 438, y: 80, width: 36, height: 20, rx: 3, fill: "var(--state-warn-bg)" }),
+          text({ x: 456, y: 94, fill: "var(--state-warn)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "STOP")
+        )
       )
-    ),
-    div({ class: "insp-card" },
-      div({ class: "insp-card-title" },
-        span("I²C LOGIC WAVEFORM & 9-CLOCK SCL RECOVERY"),
-        span({ class: "mono", style: "color:var(--proto-i2c);font-size:12px;font-weight:700" }, "400 kHz Fast-Mode")
-      ),
-      svg({ viewBox: "0 0 480 114", style: "width:100%;height:114px;background:#f8fafc;border:1px solid var(--border-strong);border-radius:3px" },
-        text({ x: 6, y: 24, fill: "var(--proto-i2c)", "font-size": 11, "font-family": "monospace", "font-weight": "bold" }, "SCL (GP7)"),
-        text({ x: 6, y: 56, fill: isGlitch ? "var(--state-glitch)" : "var(--proto-i2c)", "font-size": 11, "font-family": "monospace", "font-weight": "bold" }, "SDA (GP6)"),
-        text({ x: 6, y: 92, fill: "var(--proto-rf)", "font-size": 11, "font-family": "monospace", "font-weight": "bold" }, "I²C:Dec"),
-
-        polyline({ points: "75,24 82,24 82,14 90,14 90,24 98,24 98,14 106,14 106,24 114,24 114,14 122,14 122,24 130,24 130,14 138,14 138,24 146,24 146,14 154,14 154,24 162,24 162,14 170,14 170,24 178,24 178,14 186,14 186,24 194,24 194,14 202,14 202,24 234,24 234,14 244,14 244,24 254,24 254,14 264,14 264,24 274,24 274,14 284,14 284,24 294,24 294,14 304,14 304,24 314,24 314,14 324,14 324,24 334,24 334,14 344,14 344,24 354,24 354,14 364,14 364,24 374,24 374,14 384,14 384,24 394,24 394,14 404,14 404,24 414,24 414,14 424,14 424,24 460,24", fill: "none", stroke: "var(--proto-i2c)", "stroke-width": 2 }),
-
-        polyline({ points: isGlitch ? "75,56 80,56 80,45 150,45 150,56 195,56 195,45 245,45 245,56 460,56" : "75,56 80,56 80,45 150,45 150,56 195,56 195,56 208,56 215,45 460,45", fill: "none", stroke: isGlitch ? "var(--state-glitch)" : "var(--proto-i2c)", "stroke-width": isGlitch ? 3.5 : 2 }),
-
-        rect({ x: 75, y: 80, width: 34, height: 20, rx: 3, fill: "var(--state-warn-bg)", stroke: "var(--state-warn-border)", "stroke-width": 1 }),
-        text({ x: 92, y: 94, fill: "var(--state-warn)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "START"),
-
-        rect({ x: 114, y: 80, width: 102, height: 20, rx: 3, fill: "var(--proto-i2c-bg)", stroke: "var(--proto-i2c-border)", "stroke-width": 1 }),
-        text({ x: 165, y: 94, fill: "var(--proto-i2c)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle" }, "ADDR: 0x19 W"),
-
-        rect({ x: 220, y: 80, width: isGlitch ? 92 : 36, height: 20, rx: 3, fill: isGlitch ? "var(--state-glitch-bg)" : "var(--proto-uart-bg)", stroke: isGlitch ? "var(--state-glitch)" : "var(--proto-uart-border)", "stroke-width": 1.5 }),
-        text({ x: isGlitch ? 266 : 238, y: 94, fill: isGlitch ? "var(--state-glitch)" : "var(--proto-uart)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" },
-          isGlitch ? "⚡ NACK (50µs)" : "ACK"),
-
-        isGlitch ? rect({ x: 316, y: 80, width: 118, height: 20, rx: 3, fill: "var(--proto-i2c-bg)", stroke: "var(--proto-i2c)", "stroke-dasharray": "2 2" }) : null,
-        isGlitch ? text({ x: 375, y: 94, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "9-CLK RECOVERY") : null,
-
-        rect({ x: 438, y: 80, width: 34, height: 20, rx: 3, fill: "var(--state-warn-bg)", stroke: "var(--state-warn-border)", "stroke-width": 1 }),
-        text({ x: 455, y: 94, fill: "var(--state-warn)", "font-size": 10.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "STOP")
-      )
-    )
-  );
+    );
+  };
 }
 function RfRadarTab() {
   const wifiChannels = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
   const zigbeeChannels = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26];
-  return div({ style: "display:flex;flex-direction:column;gap:8px" },
+  return () => div({ style: "display:flex;flex-direction:column;gap:8px" },
     div({ class: "insp-card" },
       div({ class: "insp-card-title" },
-        span("2.4 GHz WI-FI SPECTRUM OCCUPANCY (802.11ax/b/g/n)"),
-        span({ style: "color:var(--proto-rf);font-size:12px" },
-          wifiChannelMode.val === 0 ? `SWEEPING (Active Ch ${wifiActiveCh.val})` : `LOCKED CH ${wifiActiveCh.val}`)
+        span("WI-FI CHANNELS (1–13)"),
+        span({ style: "color:var(--proto-rf)" },
+          wifiChannelMode.val === 0 ? `SWEEPING (Ch ${wifiActiveCh.val})` : `LOCKED CH ${wifiActiveCh.val}`)
       ),
       div({ style: "display:flex;gap:8px;align-items:center;margin-bottom:5px" },
         button({
-          class: () => "cmd-btn" + (wifiChannelMode.val === 0 ? " active" : ""),
+          class: "cmd-btn" + (wifiChannelMode.val === 0 ? " active" : ""),
           onclick: () => selectWifiChannel(0)
-        }, "🔄 Sweep All Channels (1–13)"),
-        span({ class: "mono", style: "font-size:11.5px;color:var(--fg-muted)" }, "50ms off-channel probe / 250ms HTTP Ch6 hold")
+        }, "🔄 Sweep All"),
+        span({ class: "mono", style: "font-size:12px;color:var(--fg-muted)" }, `${wifiPkts.val} frames captured`)
       ),
       div({ class: "ch-grid" },
         wifiChannels.map(ch => button({
-          class: () => "btn-ch" + (wifiChannelMode.val === ch ? " active" : ""),
+          class: "btn-ch" + (wifiChannelMode.val === ch ? " active" : ""),
           onclick: () => selectWifiChannel(ch)
         }, `Ch ${ch}`))
       )
     ),
     div({ class: "insp-card" },
       div({ class: "insp-card-title" },
-        span("IEEE 802.15.4 / ZIGBEE CHANNEL SELECTOR (CH 11–26)"),
-        span({ style: "color:#d97706;font-size:12px" },
-          () => `LOCKED CH ${zigbeeChannel.val} (${2405 + 5 * (zigbeeChannel.val - 11)} MHz)`)
+        span("ZIGBEE CHANNELS (11–26)"),
+        span({ style: "color:#d97706" },
+          `CH ${zigbeeChannel.val} (${2405 + 5 * (zigbeeChannel.val - 11)} MHz)`)
       ),
-      div({ style: "display:flex;gap:8px;align-items:center;margin-bottom:5px" },
+      div({ style: "display:flex;gap:6px;align-items:center;margin-bottom:5px" },
         button({
-          class: () => "cmd-btn" + (zigbeeChannel.val === 15 ? " active" : ""),
+          class: "cmd-btn" + (zigbeeChannel.val === 15 ? " active" : ""),
           onclick: () => selectZigbeeChannel(15)
-        }, "⭐ Iris Default (Ch 15 / 2425 MHz)"),
+        }, "Ch 15 Default"),
         button({
-          class: () => "cmd-btn" + (zigbeeChannel.val === 11 ? " active" : ""),
+          class: "cmd-btn" + (zigbeeChannel.val === 11 ? " active" : ""),
           onclick: () => selectZigbeeChannel(11)
-        }, "Ch 11 (Iris Alt / 2405 MHz)"),
+        }, "Ch 11"),
         button({
-          class: () => "cmd-btn" + (zigbeeChannel.val === 26 ? " active" : ""),
+          class: "cmd-btn" + (zigbeeChannel.val === 26 ? " active" : ""),
           onclick: () => selectZigbeeChannel(26)
-        }, "Ch 26 (Out-of-band / 2480 MHz)")
+        }, "Ch 26")
       ),
       div({ class: "ch-grid-zigbee" },
         zigbeeChannels.map(ch => button({
-          class: () => "btn-ch btn-ch-zigbee" + (zigbeeChannel.val === ch ? " active" : ""),
+          class: "btn-ch btn-ch-zigbee" + (zigbeeChannel.val === ch ? " active" : ""),
           onclick: () => selectZigbeeChannel(ch)
         }, `Ch ${ch}`))
       )
     ),
     div({ class: "insp-card" },
       div({ class: "insp-card-title" },
-        span("TARGETED IRIS ALLOW-LIST FILTER (FR-6, TC-3.3)"),
-        span({ style: "color:var(--proto-uart)" }, "0 BROADCAST DROPS")
+        span("IRIS WIRELESS TARGET (02:00:00:00:00:03)"),
+        span({ style: irisVerified.val ? "color:var(--proto-uart);font-weight:700" : "color:var(--fg-dim)" },
+          irisVerified.val && irisRssi.val !== null ? `✓ VERIFIED (${irisRssi.val} dBm)` : `OFFLINE`)
       ),
-      div({ style: "font-size:12px;color:var(--fg-muted);display:flex;flex-direction:column;gap:4px" },
-        div("• Target BSSID: ", strong({ style: "color:#d8b4fe" }, "02:00:00:00:00:03"), " (Short: 0x0003, PAN: 0x1234)"),
-        div("• 802.15.4 Frequency: ", strong({ style: "color:var(--proto-i2c)" }, "Channel 15 (2425 MHz)"), " • Wi-Fi: ", strong("Ch 6 (2437 MHz)")),
-        div("• Allow-List Check: ", strong({ style: "color:var(--proto-uart)" }, "Strict MAC Match Verified"), " — broadcast stress strictly prohibited.")
-      )
-    ),
-    div({ class: "insp-card" },
-      div({ class: "insp-card-title" },
-        span("IRIS LOCATION & OVER-THE-AIR (OTA) CONTROL PLANE"),
-        () => span({ style: irisVerified.val ? "color:var(--proto-uart);font-weight:700" : "color:var(--fg-dim)" },
-          irisVerified.val ? `✓ VERIFIED BENCH ZONE (${irisRssi.val} dBm)` : `⏳ UNVERIFIED DISTANT (${irisRssi.val} dBm)`)
-      ),
-      div({ style: "display:flex;flex-direction:column;gap:6px;margin-top:4px" },
-        div({ style: "font-size:12px;color:var(--fg-muted)" },
-          () => `Current State: ${irisRate.val} Workload • SoftAP Channel ${wifiActiveCh.val} • Ranging: ${irisVerified.val ? "≤ 30 cm Verified" : "> 1 m Distant"}`
-        ),
-        div({ style: "display:flex;gap:6px;flex-wrap:wrap;margin-top:2px" },
-          button({
-            class: () => "cmd-btn" + (irisVerified.val && irisRate.val === "20 Hz" ? " active" : ""),
-            disabled: () => !irisVerified.val,
-            onclick: () => triggerIrisCmd("20hz", "OTA: Commanded Iris to 20 Hz High-Density Stress Burst (50 ms)")
-          }, "⚡ 20 Hz Stress Burst"),
-          button({
-            class: () => "cmd-btn" + (irisVerified.val && irisRate.val === "2 Hz" ? " active" : ""),
-            disabled: () => !irisVerified.val,
-            onclick: () => triggerIrisCmd("2hz", "OTA: Restored Iris to 2 Hz Nominal Beacon Rate (500 ms)")
-          }, "✓ 2 Hz Nominal"),
-          button({
-            class: "cmd-btn rf-btn",
-            disabled: () => !irisVerified.val,
-            onclick: () => triggerIrisCmd("ch11", "OTA: Commanded Iris to hop SoftAP to Wi-Fi Channel 11")
-          }, "🔄 Hop to Ch 11"),
-          button({
-            class: "cmd-btn",
-            disabled: () => !irisVerified.val,
-            onclick: () => triggerIrisCmd("ch6", "OTA: Restored Iris SoftAP to Wi-Fi Channel 6")
-          }, "🔄 Restore to Ch 6")
-        )
+      div({ style: "display:flex;gap:6px;flex-wrap:wrap;margin-top:4px" },
+        button({
+          class: "cmd-btn" + (irisVerified.val && irisRate.val === "20 Hz" ? " active" : ""),
+          disabled: !irisVerified.val,
+          onclick: () => triggerIrisCmd("20hz", "OTA: Commanded Iris to 20 Hz Burst")
+        }, "⚡ 20 Hz Burst"),
+        button({
+          class: "cmd-btn" + (irisVerified.val && irisRate.val === "2 Hz" ? " active" : ""),
+          disabled: !irisVerified.val,
+          onclick: () => triggerIrisCmd("2hz", "OTA: Restored Iris to 2 Hz Nominal")
+        }, "✓ 2 Hz Nominal"),
+        button({
+          class: "cmd-btn rf-btn",
+          disabled: !irisVerified.val,
+          onclick: () => triggerIrisCmd("ch11", "OTA: Commanded Iris to Ch 11")
+        }, "Hop Ch 11"),
+        button({
+          class: "cmd-btn",
+          disabled: !irisVerified.val,
+          onclick: () => triggerIrisCmd("ch6", "OTA: Restored Iris to Ch 6")
+        }, "Hop Ch 6")
       )
     )
   );
 }
 
 function RtosTasksTab() {
-  return div({ style: "display:flex;flex-direction:column;gap:8px" },
+  return () => div({ style: "display:flex;flex-direction:column;gap:8px" },
     div({ class: "insp-card" },
       div({ class: "insp-card-title" },
-        span("µT-KERNEL 3.0 CONCURRENCY & TASK TABLE"),
-        span({ style: "color:var(--proto-i2c)" }, "ZERO MALLOC | BARR-C")
+        span("µT-KERNEL 3.0 TASKS"),
+        span({ style: "color:var(--proto-i2c)" }, "STATIC MEMORY | BARR-C")
       ),
       table({ class: "ws-table" },
-        thead(tr(th("TASK / CORE"), th("PRIO"), th("PERIPHERAL / REGISTER"), th("STATE"))),
+        thead(tr(th("TASK"), th("PRIO"), th("HARDWARE BINDING"), th("STATE"))),
         tbody(
-          tr(td("TSK_SAFETY"), td("4"), td("GPIO9 ISR -> GPIO.enable_w1tc (<200ns)"), td({ style: "color:var(--proto-uart)" }, safetyState.val)),
-          tr(td("TSK_DASHBOARD"), td("6"), td("SoftAP Ch6 + SD /WWW/ + 4KB /api/pcap"), td("2.0 Hz")),
-          tr(td("TSK_DISCOVERY"), td("7"), td("UART1.lowpulse + I2C0.sr (<10ms remap)"), td("LOCKED")),
-          tr(td("TSK_SNIFFER"), td("8"), td("U1RXD_IN (GPIO5) + I2CEXT0 (GPIO6/7)"), td("ACTIVE")),
-          tr(td("TSK_FUZZER"), td("9"), td("U1TXD_OUT (10µs) + I2C0.ctr (50µs)"), td("ARMED")),
-          tr(td("TSK_STORAGE"), td("10"), td("GPIO18..21 Bitbang SPI -> FAT32 PCAP"), td("READY"))
+          tr(td("TSK_SAFETY"), td("4"), td("GPIO9 ISR -> GPIO.enable_w1tc (<200ns)"), td({ style: "color:var(--proto-uart);font-weight:700" }, safetyState.val)),
+          tr(td("TSK_DASHBOARD"), td("6"), td("SoftAP Ch 6 + WebSocket 2 Hz"), td("2.0 Hz")),
+          tr(td("TSK_DISCOVERY"), td("7"), td("UART1.lowpulse + I2C0.sr (<10ms remap)"), td(discoveryLocked.val ? "LOCKED" : "AUTO")),
+          tr(td("TSK_SNIFFER"), td("8"), td("GPIO5 (Row 22) + GPIO6/7 (Row 58/55)"), td("ACTIVE")),
+          tr(td("TSK_FUZZER"), td("9"), td("GPIO4 (Row 13 10µs) + I2C0 (50µs)"), td(activeGlitchBus.val ? `GLITCH (${activeGlitchBus.val})` : "ARMED"))
         )
       )
     ),
     div({ class: "insp-card" },
       div({ class: "insp-card-title" },
-        span("HIGH-SPEED BUS ACTIVITY LOG (UNTHROTTLED)"),
-        span({ class: "mono", style: "color:var(--proto-uart)" }, () => `${highSpeedLog.val.length} events`)
+        span("HIGH-SPEED BUS ACTIVITY LOG"),
+        span({ class: "mono", style: "color:var(--proto-uart)" }, `${highSpeedLog.val.length} events`)
       ),
       div({ class: "high-speed-log-box" },
-        () => highSpeedLog.val.length === 0
+        highSpeedLog.val.length === 0
           ? div({ style: "color:var(--fg-dim);padding:4px" }, "Waiting for live hardware bus transitions...")
           : highSpeedLog.val.slice(0, 40).map(item =>
               div({ class: "log-line" + (item.isFault ? " log-fault" : "") },
@@ -1263,19 +1230,19 @@ function ContextualInspectorPane() {
       button({
         class: () => "insp-tab" + (activeInspTab.val === "WAVE" ? " active" : ""),
         onclick: () => activeInspTab.val = "WAVE"
-      }, "1. LOGIC SCOPE & DIFF"),
+      }, "Scope & Diff"),
       button({
         class: () => "insp-tab" + (activeInspTab.val === "I2C_TOK" ? " active" : ""),
         onclick: () => activeInspTab.val = "I2C_TOK"
-      }, "2. I²C TOKENS & RECOVERY"),
+      }, "I²C Stream"),
       button({
         class: () => "insp-tab" + (activeInspTab.val === "RF_RADAR" ? " active" : ""),
         onclick: () => activeInspTab.val = "RF_RADAR"
-      }, "3. 2.4GHz RF RADAR"),
+      }, "Wireless"),
       button({
         class: () => "insp-tab" + (activeInspTab.val === "RTOS" ? " active" : ""),
         onclick: () => activeInspTab.val = "RTOS"
-      }, "4. TASKS & BUS LOG")
+      }, "Tasks & Log")
     ),
     () => {
       let tab = activeInspTab.val;
@@ -1306,32 +1273,32 @@ function sortIndicator(col) {
 
 function BottomWiresharkPane() {
   const quickFilters = [
-    { id: "ALL", label: "All Traffic" },
-    { id: "UART", label: "UART (115200)" },
-    { id: "I2C", label: "I2C (400 kHz)" },
-    { id: "WIFI", label: "Wi-Fi 6 (Ch 1–13)" },
-    { id: "ZIGBEE", label: "802.15.4 (Ch 15)" },
-    { id: "FAULTS", label: "⚡ Faults Only" }
+    { id: "ALL", label: "All" },
+    { id: "UART", label: "UART" },
+    { id: "I2C", label: "I²C" },
+    { id: "WIFI", label: "Wi-Fi" },
+    { id: "ZIGBEE", label: "Zigbee" },
+    { id: "FAULTS", label: "⚡ Faults" }
   ];
 
   return div({ class: "bottom-wireshark" },
     div({ class: "ws-toolbar" },
-      span({ class: "mono", style: "font-size:11.5px;font-weight:700;color:var(--proto-i2c)" }, "WIRESHARK:"),
       quickFilters.map(qf => button({
         class: () => "cmd-btn" + (filterProtocol.val === qf.id ? " active" : ""),
         onclick: () => filterProtocol.val = qf.id
       }, qf.label)),
       button({
         class: () => "hurry-toggle" + (hurryModeEnabled.val ? "" : " off"),
+        title: "Collapse repetitive nominal polling rows",
         onclick: () => {
           hurryModeEnabled.val = !hurryModeEnabled.val;
-          showToast("Hurry Mode (Collapse Repetitive Polling): " + (hurryModeEnabled.val ? "ON" : "OFF"));
+          showToast("Hurry Mode: " + (hurryModeEnabled.val ? "ON" : "OFF"));
         }
-      }, () => hurryModeEnabled.val ? "⚡ Hurry Mode: ON" : "Hurry Mode: OFF"),
+      }, () => hurryModeEnabled.val ? "⚡ Hurry: ON" : "Hurry: OFF"),
       input({
         class: "ws-input",
         type: "text",
-        placeholder: "Client expression (e.g. lsm303, 0xa8, iris, fail, hestia)...",
+        placeholder: "Filter frames (e.g. hestia, 0x19, zigbee, glitch)...",
         value: () => filterSearchText.val,
         oninput: (e) => filterSearchText.val = e.target.value
       }),
@@ -1339,8 +1306,8 @@ function BottomWiresharkPane() {
         class: "cmd-btn",
         onclick: () => { filterProtocol.val = "ALL"; filterSearchText.val = ""; }
       }, "Clear"),
-      () => span({ class: "mono", style: "font-size:11px;color:var(--fg-muted)" },
-        `${pcapAuditTotal.val} total (${packets.val.length} buffered)`)
+      () => span({ class: "mono", style: "font-size:12.5px;color:var(--fg-muted)" },
+        `${pcapAuditTotal.val} frames (${packets.val.length} shown)`)
     ),
     div({ class: "ws-split" },
       // Left 62%: Sortable Packet Table

@@ -71,12 +71,12 @@ state = {
     "uart_locked": True,
     "i2c_locked": True,
     "pcap_bytes": 24,
-    "accel": {"x": -28, "y": 54, "z": 981},
-    "mag": {"x": -305, "y": 52, "z": 61},
+    "accel": None,
+    "mag": None,
     "uptime_s": 0,
     "ber": "0.000%",
-    "iris_rssi": -38,
-    "iris_verified": True
+    "iris_rssi": None,
+    "iris_verified": False
 }
 ser_wtf = None
 ser_daphne = None
