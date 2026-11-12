@@ -1,29 +1,48 @@
-/* Lab-Instrument Packet Tracer + Wireshark + Logic Scope Workbench (Served from MicroSD /WWW/STYLE.CSS) */
+/* ==========================================================================
+ * whattheflip // Minimalist Engineering Workbench
+ * Built to Impeccable Craft Floor & Clean UI Principles:
+ *   - Clean White Canvas (#ffffff) with subtle elevated areas (#f8fafc)
+ *   - Transparent & soft backgrounds; border color used sparingly for structure only
+ *   - Deep Charcoal/Black Text (#0f172a) meeting WCAG AA contrast (≥ 4.5:1)
+ *   - Strategic Protocol Accents (UART green, I2C blue, RF purple, Glitch crimson)
+ * ========================================================================== */
+
 :root {
-  --bg-canvas: #090d14;
-  --bg-panel: #0f141f;
-  --bg-elevated: #161d2b;
-  --bg-hover: #1e293b;
-  --border-subtle: #1e293b;
-  --border-strong: #334155;
+  --bg-canvas: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-elevated: #f8fafc;
+  --bg-hover: #f1f5f9;
+  --bg-active: #e2e8f0;
+  --border-subtle: #f1f5f9;
+  --border-strong: #e2e8f0;
+  --border-focus: #0f172a;
 
-  --fg-primary: #f1f5f9;
-  --fg-muted: #94a3b8;
-  --fg-dim: #64748b;
+  --fg-primary: #0f172a;
+  --fg-muted: #64748b;
+  --fg-dim: #94a3b8;
 
-  --proto-uart: #10b981;
-  --proto-uart-bg: rgba(16, 185, 129, 0.16);
-  --proto-i2c: #06b6d4;
-  --proto-i2c-bg: rgba(6, 182, 212, 0.16);
-  --proto-rf: #a855f7;
-  --proto-rf-bg: rgba(168, 85, 247, 0.16);
-  --state-glitch: #f43f5e;
-  --state-glitch-bg: rgba(244, 63, 94, 0.18);
-  --state-warn: #f59e0b;
-  --state-warn-bg: rgba(245, 158, 11, 0.18);
+  --proto-uart: #059669;
+  --proto-uart-bg: rgba(5, 150, 105, 0.08);
+
+  --proto-i2c: #0284c7;
+  --proto-i2c-bg: rgba(2, 132, 199, 0.08);
+
+  --proto-rf: #7c3aed;
+  --proto-rf-bg: rgba(124, 58, 237, 0.08);
+
+  --state-glitch: #e11d48;
+  --state-glitch-bg: rgba(225, 29, 72, 0.08);
+
+  --state-warn: #d97706;
+  --state-warn-bg: rgba(217, 119, 6, 0.08);
 
   --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --fs-title: 15px;
+  --fs-body: 13.5px;
+  --fs-ui: 12.5px;
+  --fs-chip: 11.5px;
 }
 
 * {
@@ -36,8 +55,8 @@ body {
   background: var(--bg-canvas);
   color: var(--fg-primary);
   font-family: var(--font-sans);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: var(--fs-body);
+  line-height: 1.45;
   height: 100vh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
@@ -48,51 +67,62 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Workbench Root Grid: 46px Top Bar + 52% Upper Split + 1fr Bottom Wireshark */
+/* ==========================================================================
+ * Workbench Root Grid: 48px Header + 52vh Upper Split + 1fr Bottom Wireshark
+ * ========================================================================== */
 .workbench-root {
   display: grid;
-  grid-template-rows: 46px 52vh 1fr;
+  grid-template-rows: auto minmax(0, 48vh) minmax(0, 1fr);
   height: 100vh;
   width: 100vw;
   overflow: hidden;
+  background: var(--bg-canvas);
 }
 
-/* Toast Notification */
+.workbench-header {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/* Toast Notifications */
 .toast-container {
   position: fixed;
-  top: 54px;
-  right: 16px;
+  top: 56px;
+  right: 18px;
   z-index: 9999;
   pointer-events: none;
 }
 .toast {
-  background: var(--bg-elevated);
+  background: #ffffff;
   color: var(--fg-primary);
   border: 1px solid var(--border-strong);
-  border-left: 3px solid var(--proto-i2c);
-  padding: 8px 12px;
+  padding: 8px 14px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-ui);
   display: flex;
   align-items: center;
   gap: 10px;
   pointer-events: auto;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  border-radius: 6px;
 }
 
-/* Top Command & Transport Bar */
+/* Row 1: Top Command & Action Bar */
 .top-cmd-bar {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 6px 16px;
   gap: 8px;
   overflow-x: auto;
 }
 
-.brand-cluster, .transport-cluster, .injector-cluster, .safety-cluster {
+.brand-cluster, .injector-cluster, .safety-cluster {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -102,112 +132,112 @@ body {
 .brand-logo {
   font-family: var(--font-mono);
   font-weight: 800;
-  font-size: 13px;
+  font-size: var(--fs-title);
   letter-spacing: 0.06em;
   color: var(--fg-primary);
 }
 
-.safety-pill {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 2px;
-  border: 1px solid var(--proto-uart);
-  color: var(--proto-uart);
-  background: var(--proto-uart-bg);
-}
-.safety-pill.aborted {
-  border-color: var(--state-glitch);
-  color: var(--state-glitch);
-  background: var(--state-glitch-bg);
-}
-
+/* Buttons: Transparent baseline with soft background; NO border clutter */
 .cmd-btn {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-ui);
   font-weight: 600;
   color: var(--fg-primary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  padding: 4px 8px;
-  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid transparent;
+  padding: 6px 12px;
+  border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.1s;
+  transition: background-color 0.1s ease, color 0.1s ease;
 }
-.cmd-btn:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
+.cmd-btn:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.08);
+}
+.cmd-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .cmd-btn.active {
-  border-color: var(--proto-i2c);
   color: var(--proto-i2c);
   background: var(--proto-i2c-bg);
 }
-.cmd-btn.warn {
-  border-color: rgba(245, 158, 11, 0.45);
-  color: var(--state-warn);
-}
-.cmd-btn.warn:hover {
-  background: var(--state-warn-bg);
-}
 .cmd-btn.glitch {
-  border-color: rgba(244, 63, 94, 0.45);
-  color: #fda4af;
+  color: var(--state-glitch);
+  background: var(--state-glitch-bg);
 }
 .cmd-btn.glitch:hover {
-  background: var(--state-glitch-bg);
-  border-color: var(--state-glitch);
+  background: rgba(225, 29, 72, 0.14);
+}
+.cmd-btn.warn {
+  color: var(--state-warn);
+  background: var(--state-warn-bg);
+}
+.cmd-btn.warn:hover {
+  background: rgba(217, 119, 6, 0.14);
+}
+.cmd-btn.rf-btn {
+  color: var(--proto-rf);
+  background: var(--proto-rf-bg);
+}
+.cmd-btn.rf-btn:hover {
+  background: rgba(124, 58, 237, 0.14);
 }
 .cmd-btn.estop {
-  background: var(--state-glitch);
-  border-color: var(--state-glitch);
+  background: #dc2626;
   color: #ffffff;
   font-weight: 800;
+  border: 1px solid transparent;
+}
+.cmd-btn.estop:hover {
+  background: #b91c1c;
 }
 .cmd-btn.rearm {
-  background: var(--proto-uart);
-  border-color: var(--proto-uart);
-  color: #052e16;
+  background: #059669;
+  color: #ffffff;
   font-weight: 800;
+  border: 1px solid transparent;
+}
+.cmd-btn.rearm:hover {
+  background: #047857;
 }
 .cmd-btn.pcap-dl {
   text-decoration: none;
-  border-color: var(--proto-i2c);
   color: var(--proto-i2c);
+  background: var(--proto-i2c-bg);
 }
 
-/* Upper Split: 58% Topology Schematic Canvas + 42% Contextual Inspector */
+/* Row 2: Upper Split (58% Breadboard Canvas + 42% Inspector) */
 .upper-workbench {
   display: grid;
   grid-template-columns: 58% 42%;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-strong);
   min-height: 0;
   overflow: hidden;
 }
 
+/* Left: Breadboard Signal Path Canvas */
 .topology-pane {
-  background-color: var(--bg-canvas);
-  background-image: radial-gradient(var(--border-subtle) 1px, transparent 1px);
-  background-size: 16px 16px;
-  border-right: 1px solid var(--border-subtle);
+  background-color: #ffffff;
+  background-image: radial-gradient(#e2e8f0 1.2px, transparent 1.2px);
+  background-size: 20px 20px;
+  border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
-  position: relative;
   min-height: 0;
   overflow: hidden;
 }
 
 .pane-header {
   background: var(--bg-panel);
-  border-bottom: 1px solid var(--border-subtle);
-  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 6px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-chip);
+  font-weight: 700;
   color: var(--fg-muted);
   flex-shrink: 0;
 }
@@ -215,11 +245,10 @@ body {
 .topology-svg-wrap {
   flex: 1;
   width: 100%;
-  height: 100%;
-  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 4px 8px;
 }
 
 .topology-svg {
@@ -233,21 +262,18 @@ body {
 }
 .topo-node:hover rect.node-box {
   stroke: var(--fg-primary);
+  stroke-width: 1.5px;
 }
 .topo-wire {
   cursor: pointer;
-  transition: stroke-width 0.12s;
-}
-.topo-wire:hover {
-  stroke-width: 3.5px;
 }
 .pdu-pill {
   cursor: pointer;
 }
 
-/* Upper Right: Contextual PDU & Hardware Inspector */
+/* Right: Contextual Inspector Tabs */
 .inspector-pane {
-  background: var(--bg-panel);
+  background: #ffffff;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -256,15 +282,15 @@ body {
 
 .inspector-tabs {
   display: flex;
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-strong);
   flex-shrink: 0;
 }
 .insp-tab {
   flex: 1;
-  padding: 6px 8px;
+  padding: 8px 10px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-ui);
   font-weight: 700;
   color: var(--fg-muted);
   background: transparent;
@@ -272,6 +298,7 @@ body {
   border-right: 1px solid var(--border-subtle);
   cursor: pointer;
   text-align: center;
+  transition: background-color 0.1s ease, color 0.1s ease;
 }
 .insp-tab:hover {
   color: var(--fg-primary);
@@ -279,122 +306,276 @@ body {
 }
 .insp-tab.active {
   color: var(--proto-i2c);
-  background: var(--bg-panel);
-  box-shadow: inset 0 -2px 0 var(--proto-i2c);
+  background: #ffffff;
+  box-shadow: inset 0 -3px 0 var(--proto-i2c);
 }
 
 .inspector-body {
   flex: 1;
-  padding: 8px 10px;
+  padding: 10px 14px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  background: #ffffff;
 }
 
+/* Cards: Borderless with clear whitespace hierarchy */
 .insp-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 2px;
-  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 .insp-card-title {
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--fg-muted);
+  font-size: var(--fs-ui);
+  font-weight: 800;
+  color: var(--fg-primary);
   text-transform: uppercase;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
+}
+
+/* Logic Scope & GPIO Probing Styles */
+.scope-header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0 6px 0;
+}
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.scope-led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.scope-led.high {
+  background: var(--proto-uart);
+  box-shadow: 0 0 4px var(--proto-uart);
+}
+.scope-led.low {
+  background: #94a3b8;
+}
+.scope-led.pulse {
+  background: var(--state-glitch);
+  box-shadow: 0 0 5px var(--state-glitch);
 }
 
 .diff-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: 10px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-ui);
 }
 .diff-box {
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-subtle);
-  padding: 5px 7px;
+  background: var(--bg-elevated);
+  border: none;
+  padding: 8px 10px;
+  border-radius: 4px;
 }
 .bit-row {
   display: flex;
-  gap: 2px;
+  gap: 3px;
   flex-wrap: wrap;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 .bit-cell {
   font-family: var(--font-mono);
-  font-size: 9px;
-  padding: 1px 3px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
+  font-size: 11px;
+  padding: 2px 5px;
+  background: var(--proto-uart-bg);
+  border: none;
   color: var(--proto-uart);
+  font-weight: 600;
+  border-radius: 2px;
 }
 .bit-cell.flipped {
-  background: var(--state-glitch-bg);
-  border-color: var(--state-glitch);
-  color: var(--state-glitch);
+  background: var(--state-glitch);
+  color: #ffffff;
   font-weight: 800;
 }
 
-/* Wi-Fi Channel Grid inside RF Inspector */
+.token-stream {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border: none;
+  border-radius: 4px;
+}
+.tok {
+  padding: 3px 7px;
+  border-radius: 3px;
+  font-weight: 700;
+  background: rgba(15, 23, 42, 0.05);
+  border: none;
+  color: var(--fg-primary);
+}
+.tok.start, .tok.stop {
+  background: var(--state-warn-bg);
+  color: var(--state-warn);
+}
+.tok.addr {
+  background: var(--proto-i2c-bg);
+  color: var(--proto-i2c);
+}
+.tok.ack {
+  background: var(--proto-uart-bg);
+  color: var(--proto-uart);
+}
+.tok.nack {
+  background: var(--state-glitch);
+  color: #ffffff;
+  font-weight: 800;
+}
+.tok.rec {
+  background: var(--proto-i2c-bg);
+  color: var(--proto-i2c);
+}
+
 .ch-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 3px;
-  margin-top: 5px;
+  gap: 4px;
+  margin-top: 6px;
 }
 .btn-ch {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-chip);
   font-weight: 700;
-  padding: 3px 0;
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-subtle);
-  color: var(--fg-muted);
+  padding: 5px 0;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid transparent;
+  color: var(--fg-primary);
   cursor: pointer;
+  border-radius: 3px;
+}
+.btn-ch:hover {
+  background: rgba(15, 23, 42, 0.08);
 }
 .btn-ch.active {
-  background: var(--proto-rf-bg);
-  border-color: var(--proto-rf);
-  color: var(--proto-rf);
+  background: var(--proto-rf);
+  color: #ffffff;
 }
 
-/* LED Spirit Level Indicator */
-.led-strip {
-  display: flex;
-  gap: 4px;
-  margin-top: 4px;
-}
-.led-dot {
-  flex: 1;
-  height: 12px;
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-subtle);
+/* Tool Engine & Capture Mode Override Toolbar (Flipper Zero Style) */
+.tool-belt-bar {
+  background: #f8fafc;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  color: var(--fg-dim);
+  justify-content: space-between;
+  padding: 4px 16px;
+  gap: 8px;
+  overflow-x: auto;
 }
-.led-dot.lit-blue {
-  background: rgba(56, 189, 248, 0.35);
-  border-color: #38bdf8;
-  color: #e0f2fe;
-  box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
+.tool-cluster {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.tool-btn {
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  font-weight: 700;
+  color: var(--fg-muted);
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.12s ease;
+}
+.tool-btn:hover {
+  background: #f8fafc;
+  color: var(--fg-primary);
+}
+.tool-btn.active {
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+.tool-btn.active.tool-auto {
+  background: var(--proto-i2c);
+}
+.tool-btn.active.tool-uart {
+  background: var(--proto-uart);
+}
+.tool-btn.active.tool-i2c {
+  background: #0284c7;
+}
+.tool-btn.active.tool-wifi {
+  background: var(--proto-rf);
+}
+.tool-btn.active.tool-zigbee {
+  background: #d97706;
+}
+.tool-btn.active.tool-exploit {
+  background: var(--state-glitch);
 }
 
-/* Bottom Pane: Wireshark Filter Bar + 62% Table + 38% Hex/Bit Dissector */
+.lock-gate-btn {
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.12s ease;
+}
+.lock-gate-btn.locked {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+.lock-gate-btn.unlocked {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+.btn-ch.btn-ch-zigbee.active {
+  background: #d97706;
+  color: #ffffff;
+}
+.ch-grid-zigbee {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  margin-top: 6px;
+}
+
+/* Row 3: Bottom Wireshark (62% Table + 38% Hex Dump & Dissector) */
 .bottom-wireshark {
   display: flex;
   flex-direction: column;
-  background: var(--bg-panel);
+  background: #ffffff;
   min-height: 0;
   overflow: hidden;
 }
@@ -402,24 +583,48 @@ body {
 .ws-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-strong);
   flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.hurry-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: var(--proto-uart);
+  color: #ffffff;
+}
+.hurry-toggle.off {
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--fg-muted);
 }
 
 .ws-input {
   flex: 1;
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-subtle);
+  min-width: 160px;
+  background: var(--bg-elevated);
+  border: 1px solid transparent;
   color: var(--fg-primary);
   font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 3px 8px;
+  font-size: var(--fs-ui);
+  padding: 4px 10px;
   outline: none;
+  border-radius: 4px;
+  transition: border-color 0.1s ease, background-color 0.1s ease;
 }
 .ws-input:focus {
+  background: #ffffff;
   border-color: var(--proto-i2c);
 }
 
@@ -429,13 +634,14 @@ body {
   grid-template-columns: 62% 38%;
   min-height: 0;
   overflow: hidden;
+  background: #ffffff;
 }
 
 .ws-table-wrap {
   overflow-y: auto;
-  border-right: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-strong);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-ui);
 }
 
 .ws-table {
@@ -446,68 +652,92 @@ body {
   position: sticky;
   top: 0;
   background: var(--bg-elevated);
-  color: var(--fg-muted);
-  font-size: 9px;
-  font-weight: 700;
+  color: var(--fg-primary);
+  font-size: var(--fs-chip);
+  font-weight: 800;
   text-align: left;
-  padding: 4px 7px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-strong);
   cursor: pointer;
   user-select: none;
   z-index: 2;
 }
 .ws-table th:hover {
-  color: var(--fg-primary);
   background: var(--bg-hover);
 }
 .ws-table tr {
-  border-bottom: 1px solid rgba(30, 41, 59, 0.65);
+  border-bottom: 1px solid var(--border-strong);
   cursor: pointer;
+  color: var(--fg-primary);
 }
 .ws-table tr:hover {
   background: var(--bg-hover);
 }
 .ws-table tr.selected {
-  background: rgba(6, 182, 212, 0.2);
+  background: var(--proto-i2c-bg);
+  font-weight: 700;
 }
 .ws-table tr.row-fault {
-  background: rgba(244, 63, 94, 0.12);
+  background: var(--state-glitch-bg);
+  color: var(--state-glitch);
+}
+.ws-table tr.row-hurry {
+  background: var(--bg-elevated);
+  color: var(--fg-dim);
+  font-style: italic;
 }
 .ws-table td {
-  padding: 3px 7px;
+  padding: 5px 10px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .ws-table td.col-summary {
-  max-width: 380px;
+  max-width: 460px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .badge {
-  font-size: 9px;
+  font-size: var(--fs-chip);
   font-weight: 700;
-  padding: 1px 5px;
-  border-radius: 2px;
+  padding: 2px 7px;
+  border-radius: 3px;
   display: inline-block;
+  background: rgba(15, 23, 42, 0.05);
+  border: none;
+  color: var(--fg-primary);
 }
 .badge.uart { color: var(--proto-uart); background: var(--proto-uart-bg); }
 .badge.i2c { color: var(--proto-i2c); background: var(--proto-i2c-bg); }
 .badge.wifi, .badge.zigbee { color: var(--proto-rf); background: var(--proto-rf-bg); }
-.badge.fault { color: var(--state-glitch); background: var(--state-glitch-bg); }
+.badge.fault { color: #ffffff; background: var(--state-glitch); }
+.badge.hurry { background: var(--bg-elevated); color: var(--fg-muted); }
 
 .ws-hex-pane {
   display: flex;
   flex-direction: column;
-  padding: 6px 10px;
-  background: var(--bg-canvas);
+  padding: 8px 12px;
+  background: #ffffff;
   overflow-y: auto;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-ui);
+  gap: 8px;
 }
+
+.pcap-audit-box {
+  background: var(--bg-elevated);
+  border: none;
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
 .hex-dump-pre {
   color: var(--fg-primary);
-  line-height: 1.45;
+  line-height: 1.48;
   white-space: pre;
-  margin-top: 4px;
+  font-size: 11.5px;
+  background: var(--bg-elevated);
+  padding: 8px 10px;
+  border: none;
+  border-radius: 4px;
 }

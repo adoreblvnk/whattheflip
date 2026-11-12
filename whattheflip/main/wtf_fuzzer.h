@@ -22,4 +22,7 @@ EXPORT void wtf_fuzzer_inject_uart(void);
 EXPORT void wtf_fuzzer_inject_i2c_ack(void);
 EXPORT void wtf_fuzzer_inject_i2c_stretch(void);
 EXPORT void wtf_fuzzer_inject_wireless_jam(void);
+
+/* Over-the-air Iris command transmission (FR-6 targeted 802.15.4 frame) */
+EXPORT void wtf_fuzzer_send_iris_cmd(const char *cmd_str);
 #endif /* WTF_FUZZER_H */

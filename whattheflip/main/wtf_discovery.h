@@ -18,4 +18,11 @@ EXPORT bool wtf_discovery_is_locked(uint8_t proto);
 EXPORT ER wtf_discovery_remap_probe(uint8_t probe_pin, uint8_t decoder_id);
 EXPORT uint8_t wtf_discovery_get_remapped_decoder(uint8_t probe_pin);
 
+/* Manual Discovery Gate & Selective Tool Mode Override (Flipper Zero Style) */
+EXPORT void        wtf_discovery_set_manual_lock(bool locked);
+EXPORT bool        wtf_discovery_get_manual_lock(void);
+EXPORT void        wtf_discovery_set_tool_mode(uint8_t mode);
+EXPORT uint8_t     wtf_discovery_get_tool_mode(void);
+EXPORT const char *wtf_discovery_get_tool_mode_str(void);
+
 #endif /* WTF_DISCOVERY_H */

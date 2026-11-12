@@ -25,3 +25,4 @@ venv/
 # Node build / generated artifacts
 node_modules/
 frontend/dist/
+.cache/

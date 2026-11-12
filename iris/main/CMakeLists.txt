@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "iris_main.c"
     INCLUDE_DIRS "."
-    REQUIRES mtkernel hal soc esp_rom esp_hw_support esp_timer esp_wifi esp_netif esp_event nvs_flash ieee802154
+    REQUIRES mtkernel hal soc esp_rom esp_hw_support esp_timer esp_wifi esp_netif esp_event nvs_flash ieee802154 esp_driver_gpio
 )
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE

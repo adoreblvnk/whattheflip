@@ -310,6 +310,9 @@ EXPORT void wtf_safety_abort(void)
 EXPORT void wtf_safety_rearm(void)
 {
     s_safety_latched = false;
+    if (g_flg_system > 0) {
+        (void)tk_clr_flg(g_flg_system, ~FLG_BIT_SAFETY_ABORT);
+    }
     wtf_safety_set_state(WTF_STATE_ARMED);
     tm_printf((UB *)"[SAFETY] SYSTEM RE-ARMED: Probes restored, monitoring resumed\n");
 }
@@ -328,8 +331,7 @@ EXPORT void wtf_safety_task(INT stacd, void *exinf)
     for (;;) {
         UINT flgptn = 0;
         ER er = tk_wai_flg(g_flg_system, FLG_BIT_SAFETY_ABORT,
-                           TWF_ANDW, &flgptn, 50);
-
+                           TWF_ANDW | TWF_CLR, &flgptn, 50);
         uint8_t rx_char = 0;
         bool has_char = false;
         if ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) != 0) {

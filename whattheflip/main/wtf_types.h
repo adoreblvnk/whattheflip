@@ -61,6 +61,14 @@ typedef enum {
 #define PROTO_WIFI              4
 #define PROTO_IEEE802154        5
 
+/* Selective Tool Engine Modes (Flipper Zero Style Tool Selection & Capture Override) */
+#define WTF_TOOL_MODE_AUTO          0
+#define WTF_TOOL_MODE_UART          1
+#define WTF_TOOL_MODE_I2C           2
+#define WTF_TOOL_MODE_WIFI          3
+#define WTF_TOOL_MODE_ZIGBEE        4
+#define WTF_TOOL_MODE_EXPLOIT       5
+
 /* Event Flag Bits */
 #define FLG_BIT_SAFETY_ABORT    (1 << 0)
 #define FLG_BIT_UART_LOCKED     (1 << 1)

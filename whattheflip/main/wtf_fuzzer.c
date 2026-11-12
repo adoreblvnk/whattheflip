@@ -277,6 +277,39 @@ EXPORT void wtf_fuzzer_inject_wireless_jam(void)
     }
 }
 
+EXPORT void wtf_fuzzer_send_iris_cmd(const char *cmd_str)
+{
+    if (wtf_safety_is_aborted() || cmd_str == NULL) {
+        return;
+    }
+
+    /* FR-6 Invariant: Verify destination strictly matches Iris allow-list (Never broadcast) */
+    if (s_iris_target_short != 0x0003) {
+        return;
+    }
+
+    uint8_t frame[48];
+    size_t cmd_len = strlen(cmd_str);
+    if (cmd_len > 30) cmd_len = 30;
+
+    uint8_t psdu_len = 2U + 1U + 2U + 2U + 2U + (uint8_t)cmd_len;
+    frame[0] = psdu_len;
+    frame[1] = 0x41; /* FCF LSB: Data frame, PAN ID comp */
+    frame[2] = 0x88; /* FCF MSB: Short dest, short src */
+    frame[3] = (uint8_t)(esp_timer_get_time() & 0xFF);
+    frame[4] = 0x34; /* PAN ID 0x1234 */
+    frame[5] = 0x12;
+    frame[6] = (uint8_t)(s_iris_target_short & 0xFF);
+    frame[7] = (uint8_t)((s_iris_target_short >> 8) & 0xFF);
+    frame[8] = 0x01; /* Src WhatTheFlip */
+    frame[9] = 0x00;
+    memcpy(&frame[10], cmd_str, cmd_len);
+
+    (void)esp_ieee802154_transmit(frame, false);
+    tm_printf((UB *)"[FUZZER:WIRELESS] OTA CMD to Iris 0x%04X: '%s' (FR-6, TC-3.3)\n",
+              s_iris_target_short, cmd_str);
+}
+
 EXPORT void wtf_fuzzer_task(INT stacd, void *exinf)
 {
     (void)stacd;

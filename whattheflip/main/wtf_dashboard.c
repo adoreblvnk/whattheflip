@@ -42,6 +42,26 @@ static esp_err_t serve_sd_www_asset(httpd_req_t *req, const uint8_t name83[11],
     wtf_sniffer_notify_http_activity();
     size_t sd_sz = wtf_storage_get_www_file_size(name83);
     if (sd_sz == 0U) {
+        const uint8_t *fb_data = NULL;
+        size_t fb_len = 0U;
+        if (memcmp(name83, "INDEX   HTM", 11) == 0) {
+            fb_data = g_www_index_htm;
+            fb_len  = g_www_index_htm_len;
+        } else if (memcmp(name83, "APP     JS ", 11) == 0) {
+            fb_data = g_www_app_js_gz;
+            fb_len  = g_www_app_js_gz_len;
+        } else if (memcmp(name83, "STYLE   CSS", 11) == 0) {
+            fb_data = g_www_style_css_gz;
+            fb_len  = g_www_style_css_gz_len;
+        }
+        if (fb_data != NULL && fb_len > 0U) {
+            httpd_resp_set_type(req, content_type);
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            if (is_gzipped) {
+                httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+            }
+            return httpd_resp_send(req, (const char *)fb_data, fb_len);
+        }
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
@@ -105,17 +125,60 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
             } else if (c == 'U' || c == 'u') {
                 wtf_fuzzer_inject_uart();
             } else if (c == 'A' || c == 'a') {
-                wtf_fuzzer_inject_i2c_ack();
             } else if (c == 'S' || c == 's') {
                 wtf_fuzzer_inject_i2c_stretch();
             } else if (c == 'W' || c == 'w') {
                 wtf_fuzzer_inject_wireless_jam();
             }
         }
+        if (httpd_query_key_value(query, "iris_cmd", val, sizeof(val)) == ESP_OK) {
+            if (strcmp(val, "20hz") == 0) {
+                wtf_fuzzer_send_iris_cmd("WTF:CMD:RATE:20HZ");
+            } else if (strcmp(val, "2hz") == 0) {
+                wtf_fuzzer_send_iris_cmd("WTF:CMD:RATE:2HZ");
+            } else if (strcmp(val, "ch11") == 0) {
+                wtf_fuzzer_send_iris_cmd("WTF:CMD:CH:11");
+            } else if (strcmp(val, "ch6") == 0) {
+                wtf_fuzzer_send_iris_cmd("WTF:CMD:CH:6");
+            }
+        }
         if (httpd_query_key_value(query, "ch", val, sizeof(val)) == ESP_OK) {
             int ch = atoi(val);
             if (ch >= 0 && ch <= 13) {
                 wtf_sniffer_set_wifi_channel((uint8_t)ch);
+            }
+        }
+        if (httpd_query_key_value(query, "pin", val, sizeof(val)) == ESP_OK) {
+            char dec_val[16];
+            if (httpd_query_key_value(query, "dec", dec_val, sizeof(dec_val)) == ESP_OK) {
+                uint8_t pin = (uint8_t)atoi(val);
+                uint8_t dec = (uint8_t)atoi(dec_val);
+                (void)wtf_discovery_remap_probe(pin, dec);
+            }
+        }
+        if (httpd_query_key_value(query, "mode", val, sizeof(val)) == ESP_OK) {
+            if (strcasecmp(val, "auto") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_AUTO);
+            } else if (strcasecmp(val, "uart") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_UART);
+            } else if (strcasecmp(val, "i2c") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_I2C);
+            } else if (strcasecmp(val, "wifi") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_WIFI);
+            } else if (strcasecmp(val, "zigbee") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_ZIGBEE);
+            } else if (strcasecmp(val, "exploit") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_EXPLOIT);
+            }
+        }
+        if (httpd_query_key_value(query, "lock_disc", val, sizeof(val)) == ESP_OK) {
+            bool lk = (val[0] == '1' || val[0] == 't' || val[0] == 'T');
+            wtf_discovery_set_manual_lock(lk);
+        }
+        if (httpd_query_key_value(query, "zch", val, sizeof(val)) == ESP_OK) {
+            int zch = atoi(val);
+            if (zch >= 11 && zch <= 26) {
+                wtf_sniffer_set_154_channel((uint8_t)zch);
             }
         }
     }
@@ -202,13 +265,33 @@ static esp_err_t capture_pcap_get_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/vnd.tcpdump.pcap");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Accept-Ranges", "bytes");
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"capture.pcap\"");
 
-    static uint8_t s_chunk_buf[512];
     size_t offset = 0U;
+    size_t end_offset = total_sz;
+    char range_hdr[64];
+    if (httpd_req_get_hdr_value_str(req, "Range", range_hdr, sizeof(range_hdr)) == ESP_OK) {
+        unsigned r_start = 0U;
+        unsigned r_end = (unsigned)(total_sz - 1U);
+        if (sscanf(range_hdr, "bytes=%u-%u", &r_start, &r_end) >= 1) {
+            if ((size_t)r_end >= total_sz) {
+                r_end = (unsigned)(total_sz - 1U);
+            }
+            if ((size_t)r_start <= (size_t)r_end) {
+                offset = (size_t)r_start;
+                end_offset = (size_t)r_end + 1U;
+                char cr_hdr[64];
+                snprintf(cr_hdr, sizeof(cr_hdr), "bytes %u-%u/%u", r_start, r_end, (unsigned)total_sz);
+                httpd_resp_set_status(req, "206 Partial Content");
+                httpd_resp_set_hdr(req, "Content-Range", cr_hdr);
+            }
+        }
+    }
 
-    while (offset < total_sz) {
-        size_t to_read = total_sz - offset;
+    static uint8_t s_chunk_buf[512];
+    while (offset < end_offset) {
+        size_t to_read = end_offset - offset;
         if (to_read > sizeof(s_chunk_buf)) {
             to_read = sizeof(s_chunk_buf);
         }
@@ -321,36 +404,44 @@ static int format_telemetry_json(char *json_buf, size_t max_len)
     size_t pcap_bytes = wtf_storage_get_pcap_size();
     uint8_t wifi_ch   = wtf_sniffer_get_wifi_channel();
     uint8_t wifi_mode = wtf_sniffer_get_wifi_mode();
-
+    uint8_t zigbee_ch = wtf_sniffer_get_154_channel();
+    const char *tool_mode = wtf_discovery_get_tool_mode_str();
+    bool disc_locked  = wtf_discovery_get_manual_lock();
     int16_t ax = 0, ay = 0, az = 980, mx = -305, my = 52, mz = 61;
     wtf_sniffer_get_i2c_imu(&ax, &ay, &az, &mx, &my, &mz);
+
+    int8_t iris_rssi = wtf_sniffer_get_iris_rssi();
+    bool iris_verified = wtf_sniffer_is_iris_verified();
 
     return snprintf(json_buf, max_len,
                     "{\"type\":\"telemetry\","
                     "\"uart_pkts\":%u,\"i2c_pkts\":%u,\"wifi_pkts\":%u,\"ieee154_pkts\":%u,"
                     "\"fuzz_cycles\":%u,\"corrupted_frames\":%u,"
-                    "\"wifi_ch\":%u,\"wifi_mode\":%u,"
+                    "\"wifi_ch\":%u,\"wifi_mode\":%u,\"zigbee_ch\":%u,"
+                    "\"tool_mode\":\"%s\",\"disc_locked\":%s,"
                     "\"safety\":\"%s\","
                     "\"uart_locked\":%s,\"i2c_locked\":%s,"
                     "\"pcap_bytes\":%u,"
+                    "\"iris_rssi\":%d,\"iris_verified\":%s,"
                     "\"accel\":{\"x\":%d,\"y\":%d,\"z\":%d},"
                     "\"mag\":{\"x\":%d,\"y\":%d,\"z\":%d},"
                     "\"uptime_s\":%d}",
                     (unsigned)s_uart_cnt, (unsigned)s_i2c_cnt, (unsigned)s_wifi_cnt, (unsigned)s_ieee154_cnt,
                     (unsigned)s_fuzz_cnt, (unsigned)s_fuzz_cnt,
-                    (unsigned)wifi_ch, (unsigned)wifi_mode,
+                    (unsigned)wifi_ch, (unsigned)wifi_mode, (unsigned)zigbee_ch,
+                    tool_mode, disc_locked ? "true" : "false",
                     safety_str,
                     u_lock ? "true" : "false", i_lock ? "true" : "false",
                     (unsigned)pcap_bytes,
+                    (int)iris_rssi, iris_verified ? "true" : "false",
                     (int)ax, (int)ay, (int)az,
                     (int)mx, (int)my, (int)mz,
                     uptime_s);
-}
 
 static esp_err_t telemetry_get_handler(httpd_req_t *req)
 {
     wtf_sniffer_notify_http_activity();
-    char json_buf[512];
+    char json_buf[640];
     int len = format_telemetry_json(json_buf, sizeof(json_buf));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -361,7 +452,7 @@ static void broadcast_telemetry_frame(void)
 {
     if (!s_http_server) return;
 
-    char json_buf[512];
+    char json_buf[640];
     int len = format_telemetry_json(json_buf, sizeof(json_buf));
     if (len <= 0) return;
 
@@ -406,6 +497,8 @@ static void start_softap(void)
             .password = "",
             .max_connection = 4,
             .authmode = WIFI_AUTH_OPEN,
+            .ssid_hidden = 0,
+            .beacon_interval = 100,
         },
     };
 
@@ -544,5 +637,9 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
                   (unsigned)s_uart_cnt, (unsigned)s_i2c_cnt, (unsigned)s_wifi_cnt, (unsigned)s_ieee154_cnt,
                   (unsigned)s_fuzz_cnt,
                   wtf_safety_is_aborted() ? "ABORTED" : "ARMED");
+        /* Iris proximity/verified telemetry on same 2 Hz cycle */
+        tm_printf((UB *)"[DASHBOARD:2Hz] Iris: RSSI=%d dBm | Verified=%s\n",
+                  (int)wtf_sniffer_get_iris_rssi(),
+                  wtf_sniffer_is_iris_verified() ? "true" : "false");
     }
 }

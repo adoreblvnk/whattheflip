@@ -23,12 +23,19 @@
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "esp_ieee802154.h"
+#include "driver/gpio.h"
 
 #define IRIS_WIFI_CHANNEL       6
 #define IRIS_WIFI_SSID          "iris-victim"
 #define IRIS_PAN_ID             0x1234
 #define IRIS_SHORT_ADDR         0x0003
 #define IRIS_154_CHANNEL        15
+#define IRIS_STATUS_GPIO        GPIO_NUM_8
+
+/* Dynamic OTA Reconfigurable State (Controlled over-the-air from WhatTheFlip) */
+static volatile uint32_t s_tx_period_ms   = 500; /* 500 ms = 2 Hz nominal, 50 ms = 20 Hz stress */
+static volatile uint8_t  s_current_wifi_ch = 6;   /* Default Channel 6 */
+static volatile uint32_t s_ota_cmd_count   = 0;
 
 /* Static Task Stacks (Zero malloc invariant) */
 #define IDLE_STACK_SZ           1024
@@ -50,13 +57,38 @@ static void task_idle(INT stacd, void *exinf)
     }
 }
 
-/* IEEE 802.15.4 Callbacks required by driver */
+/* IEEE 802.15.4 Callbacks: Over-The-Air Control Handler */
 void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *frame_info)
 {
     (void)frame_info;
+    if (frame != NULL && frame[0] >= 14) {
+        /* Check if addressed to Iris Short Addr 0x0003 and PAN 0x1234 */
+        if (frame[4] == 0x34 && frame[5] == 0x12 && frame[6] == 0x03 && frame[7] == 0x00) {
+            s_ota_cmd_count++;
+            uint8_t len = frame[0];
+            if (len >= 20 && memcmp(&frame[10], "WTF:CMD:RATE:20HZ", 17) == 0) {
+                s_tx_period_ms = 50; /* 20 Hz high density stress */
+                tm_printf((UB *)"[IRIS:OTA] Received Command: Rate -> 20 Hz Stress Burst (50 ms)\n");
+                gpio_set_level(IRIS_STATUS_GPIO, 1);
+            } else if (len >= 19 && memcmp(&frame[10], "WTF:CMD:RATE:2HZ", 16) == 0) {
+                s_tx_period_ms = 500; /* 2 Hz nominal */
+                tm_printf((UB *)"[IRIS:OTA] Received Command: Rate -> 2 Hz Nominal Rate (500 ms)\n");
+                gpio_set_level(IRIS_STATUS_GPIO, 0);
+            } else if (len >= 17 && memcmp(&frame[10], "WTF:CMD:CH:11", 13) == 0) {
+                s_current_wifi_ch = 11;
+                (void)esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE);
+                tm_printf((UB *)"[IRIS:OTA] Received Command: Hopped SoftAP to Wi-Fi Channel 11\n");
+            } else if (len >= 16 && memcmp(&frame[10], "WTF:CMD:CH:6", 12) == 0) {
+                s_current_wifi_ch = 6;
+                (void)esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE);
+                tm_printf((UB *)"[IRIS:OTA] Received Command: Hopped SoftAP to Wi-Fi Channel 6\n");
+            } else if (len >= 20 && memcmp(&frame[10], "WTF:JAM:TARGET:IRIS", 19) == 0) {
+                tm_printf((UB *)"[IRIS:JAM] Targeted 802.15.4 Stress Jam detected from WhatTheFlip!\n");
+            }
+        }
+    }
     esp_ieee802154_receive_handle_done(frame);
 }
-
 void esp_ieee802154_receive_sfd_done(void)
 {
 }
@@ -144,14 +176,15 @@ static void task_iris_transmitter(INT stacd, void *exinf)
     uint8_t seq = 0;
     uint8_t frame_buf[128];
 
-    tm_printf((UB *)"[IRIS:802154] Periodic frame transmitter online (2 Hz on Ch %d)\n", IRIS_154_CHANNEL);
+    tm_printf((UB *)"[IRIS:802154] Periodic frame transmitter online (Agile Rate, Ch %d)\n", IRIS_154_CHANNEL);
 
     for (;;) {
         seq++;
 
         char payload[32];
-        int plen = snprintf(payload, sizeof(payload), "IRIS:PKT:%u", (unsigned)seq);
-
+        uint32_t current_rate = 1000 / s_tx_period_ms;
+        int plen = snprintf(payload, sizeof(payload), "IRIS:PKT:%u:C%u:%uH",
+                            (unsigned)seq, (unsigned)s_current_wifi_ch, (unsigned)current_rate);
         uint8_t psdu_len = 2U + 1U + 2U + 2U + 2U + (uint8_t)plen;
         frame_buf[0] = psdu_len;
         frame_buf[1] = 0x41; /* FCF LSB: Data frame, PAN ID comp */
@@ -174,7 +207,7 @@ static void task_iris_transmitter(INT stacd, void *exinf)
             tm_printf((UB *)"[IRIS:802154] TX Error %d on Frame #%u\n", (int)err, (unsigned)seq);
         }
 
-        tk_dly_tsk(500);
+        tk_dly_tsk(s_tx_period_ms);
     }
 }
 
@@ -206,8 +239,18 @@ EXPORT INT usermain(void)
 
     /* Start IEEE 802.15.4 on Channel 15 */
     iris_init_ieee802154();
+    /* Configure GPIO8 Status Pin */
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << IRIS_STATUS_GPIO),
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(IRIS_STATUS_GPIO, 0);
 
-    /* Launch 2 Hz transmitter task with static stack */
+    /* Start IEEE 802.15.4 on Channel 15 */
     T_CTSK ctsk_tx = {
         .exinf   = NULL,
         .tskatr  = TA_HLNG | TA_RNG0 | TA_USERBUF,

@@ -35,13 +35,34 @@ static const uint8_t s_iris_target_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03}
 
 static uint32_t s_wifi_capture_count = 0U;
 static uint32_t s_154_capture_count  = 0U;
+static uint8_t  s_154_channel        = 15U;
+
+EXPORT void wtf_sniffer_set_154_channel(uint8_t channel)
+{
+    if (channel < 11U || channel > 26U) {
+        return;
+    }
+    s_154_channel = channel;
+    esp_ieee802154_set_channel(channel);
+    esp_ieee802154_receive();
+    tm_printf((UB *)"[SNIFFER:802154] IEEE 802.15.4 radio tuned to Channel %u (%u MHz)\n",
+              (unsigned)channel, (unsigned)(2405U + 5U * (channel - 11U)));
+}
+
+EXPORT uint8_t wtf_sniffer_get_154_channel(void)
+{
+    return s_154_channel;
+}
+
 static uint32_t s_i2c_capture_count  = 0U;
 
-/* Wi-Fi Channel Control State:
- * s_wifi_channel_mode == 0 -> Sweep All Channels (1..13) with Ch 6 SoftAP dwell
- * s_wifi_channel_mode == 1..13 -> Locked on selected channel
- */
-static volatile uint8_t  s_wifi_channel_mode    = 0U;
+/* Dynamic Iris Proximity & Verified Location Tracking (FR-6) */
+static volatile int8_t   s_iris_rssi               = -70;
+static volatile bool     s_iris_verified           = false;
+static volatile int64_t  s_last_iris_packet_us     = 0;
+
+/* Wi-Fi Channel Control State */
+static volatile uint8_t  s_wifi_channel_mode    = SOFTAP_HOME_CHANNEL;
 static volatile uint8_t  s_current_sniffer_ch   = SOFTAP_HOME_CHANNEL;
 static uint8_t           s_next_sweep_ch        = 1U;
 static volatile int64_t  s_last_http_activity_us = 0;
@@ -275,10 +296,22 @@ void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *fr
         wtf_record_t rec;
         rec.timestamp_us = (uint32_t)now_us;
         rec.protocol = PROTO_IEEE802154;
-        rec.probe_id = 15; /* Channel 15 */
+        rec.probe_id = s_154_channel; /* Active 802.15.4 Channel (11..26) */
         uint8_t copy_len = (frame[0] < WTF_PKT_DATA_MAX) ? frame[0] : (WTF_PKT_DATA_MAX - 1);
         rec.length = (uint16_t)copy_len;
         memcpy(rec.data, &frame[1], copy_len);
+
+        if (frame[0] >= 10 && frame[8] == 0x03 && frame[9] == 0x00) {
+            s_last_iris_packet_us = now_us;
+            if (frame_info != NULL) {
+                s_iris_rssi = frame_info->rssi;
+                if (s_iris_rssi >= -42) {
+                    s_iris_verified = true;
+                } else if (s_iris_rssi < -55) {
+                    s_iris_verified = false;
+                }
+            }
+        }
 
         /* Push to storage queue (PCAP) */
         if (g_mbf_storage > 0) {
@@ -291,8 +324,8 @@ void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *fr
 
         if ((s_154_capture_count % 5U) == 1U) {
             int8_t rssi = frame_info ? frame_info->rssi : -50;
-            tm_printf((UB *)"[SNIFFER:802154] CAPTURE: 802.15.4 Frame #%u on Ch 15 (RSSI=%d dBm, len=%u, FR-4)\n",
-                      (unsigned)s_154_capture_count, (int)rssi, (unsigned)frame[0]);
+            tm_printf((UB *)"[SNIFFER:802154] CAPTURE: 802.15.4 Frame #%u on Ch %u (RSSI=%d dBm, len=%u, FR-4)\n",
+                      (unsigned)s_154_capture_count, (unsigned)s_154_channel, (int)rssi, (unsigned)frame[0]);
         }
     }
 
@@ -344,6 +377,17 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     }
 
     s_wifi_capture_count++;
+    int64_t now_us = esp_timer_get_time();
+
+    if (is_iris) {
+        s_iris_rssi = (int8_t)pkt->rx_ctrl.rssi;
+        s_last_iris_packet_us = now_us;
+        if (s_iris_rssi >= -42) {
+            s_iris_verified = true;
+        } else if (s_iris_rssi < -55) {
+            s_iris_verified = false;
+        }
+    }
 
     /* Throttle ambient non-Iris Wi-Fi frames so SD card PCAP isn't flooded,
      * while capturing 100% of Iris target frames and periodic ambient samples across Ch 1..13.
@@ -351,8 +395,6 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     if (!is_iris && (s_wifi_capture_count % 8U) != 1U) {
         return;
     }
-
-    int64_t now_us = esp_timer_get_time();
 
     wtf_record_t rec;
     rec.timestamp_us = (uint32_t)now_us;
@@ -403,24 +445,17 @@ static void sniffer_hw_uart_init(void)
 
 static void sniffer_wireless_init(void)
 {
-    /* Enable Wi-Fi promiscuous packet filter */
-    wifi_promiscuous_filter_t filter = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_ALL
-    };
-    esp_wifi_set_promiscuous_filter(&filter);
-    esp_wifi_set_promiscuous_rx_cb(wifi_promiscuous_rx_cb);
+    /* Enable Wi-Fi promiscuous mode so wifi_promiscuous_rx_cb receives 802.11 frames */
     esp_wifi_set_promiscuous(true);
+    tm_printf((UB *)"[SNIFFER:WIRELESS] Wi-Fi promiscuous mode ENABLED (Ch 1..13, FR-4, TC-2.1)\n");
 
-    tm_printf((UB *)"[SNIFFER:WIRELESS] Wi-Fi 6 promiscuous sniffer online (Ch 1..13, FR-4, TC-2.1)\n");
-
-    /* Enable IEEE 802.15.4 subsystem on Channel 15 */
+    /* Enable IEEE 802.15.4 receiver on Channel 15 so esp_ieee802154_receive_done fires */
     esp_ieee802154_enable();
+    esp_ieee802154_set_channel(s_154_channel);
     esp_ieee802154_set_promiscuous(true);
     esp_ieee802154_set_rx_when_idle(true);
-    esp_ieee802154_set_channel(15);
     esp_ieee802154_receive();
-
-    tm_printf((UB *)"[SNIFFER:WIRELESS] IEEE 802.15.4 sniffer online on Channel 15 (FR-4, TC-2.2)\n");
+    tm_printf((UB *)"[SNIFFER:WIRELESS] IEEE 802.15.4 RX ENABLED on Channel 15 (FR-4, TC-2.2)\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -575,4 +610,16 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
         }
         tk_dly_tsk(10);
     }
+}
+int8_t wtf_sniffer_get_iris_rssi(void)
+{
+    return s_iris_rssi;
+}
+
+bool wtf_sniffer_is_iris_verified(void)
+{
+    if (s_last_iris_packet_us == 0 || (esp_timer_get_time() - s_last_iris_packet_us > 4000000LL)) {
+        s_iris_verified = false;
+    }
+    return s_iris_verified;
 }
