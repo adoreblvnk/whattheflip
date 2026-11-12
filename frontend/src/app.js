@@ -611,9 +611,15 @@ function BreadboardCanvas() {
     div({ class: "pane-header" },
       span("TOPOLOGY"),
       span({ class: "sampled-badge", title: "Hardware buses run at 115.2 kbps (UART) and 400 kHz (I²C); canvas motion is rate-sampled at 2 Hz from live silicon telemetry." },
-        "2 Hz SAMPLED STREAM (115.2k / 400kHz HW)"),
+        "2 Hz SAMPLED (115.2k / 400kHz HW)"),
       () => span({ style: "color:var(--proto-uart)" },
         `UART: ${uartPkts.val} | I2C: ${i2cPkts.val} | Wi-Fi: ${wifiPkts.val} | Zigbee: ${zigbeePkts.val}`)
+    ),
+    div({ class: "causal-bridge-bar" },
+      span({ style: "color:var(--proto-uart);font-weight:700" }, "1. Simplex UART:"),
+      span("Hestia GP0 (Row 22) → R1 220Ω → Daphne GP1 (Row 13); P1 sniffs Row 22, P0 glitches Row 13."),
+      span({ style: "color:var(--proto-i2c);font-weight:700;margin-left:8px" }, "2. I²C:"),
+      span("Daphne polls GY-511 (Row 55/58); P2/P3 inject ACK-kill/stretch.")
     ),
     div({ class: "topology-svg-wrap" },
       () => {
@@ -633,166 +639,158 @@ function BreadboardCanvas() {
 
         let t1 = (ph % 100) / 100;
         let t2 = ((ph + 50) % 100) / 100;
-        let pduUartCleanX = 158 + t1 * 72;
-        let pduUartOutX   = 322 + t1 * 72;
-        let pduI2cX       = 555 - t2 * 60;
-        let pduRfX        = 450 - t2 * 220;
-        let tiltSlot      = Math.max(0, Math.min(7, Math.floor((accelAvgX.val + 1000) / 250)));
+        // Single simplex packet moving along the 1-way UART line (x: 160 -> 395)
+        let pduUartX = 160 + t1 * 235;
+        let pduPastR1 = pduUartX > 280;
+        let pduI2cX  = 555 - t2 * 60;
+        let pduRfX   = 450 - t2 * 220;
+        let tiltSlot = Math.max(0, Math.min(7, Math.floor((accelAvgX.val + 1000) / 250)));
 
-        return svg({ id: "topology-svg", class: "topology-svg", viewBox: "0 0 680 270" },
-          // 1. Simplex UART TX Line: Hestia GP0 (Row 22) -> R1 (220 Ω) -> Daphne GP1 (Row 13)
+        return svg({ id: "topology-svg", class: "topology-svg", viewBox: "0 0 680 264" },
+          // 1. Single-Line Simplex (Mono) UART Link: Hestia GP0 TX (Row 22) ---> R1 (220 Ω) ---> Daphne GP1 RX (Row 13)
           line({
-            class: "topo-wire", x1: 150, y1: 56, x2: 245, y2: 56,
-            stroke: uartLive ? "var(--proto-uart)" : "#cbd5e1", "stroke-width": 2.5,
+            class: "topo-wire", x1: 150, y1: 54, x2: 245, y2: 54,
+            stroke: uartLive ? "var(--proto-uart)" : "#cbd5e1", "stroke-width": 3,
             onclick: () => { activeInspTab.val = "WAVE"; }
           }),
-          path({ d: "M 237 52 L 244 56 L 237 60", fill: "none", stroke: uartLive ? "var(--proto-uart)" : "#cbd5e1", "stroke-width": 2 }),
-          text({ x: 197, y: 34, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "Row 22 TX"),
-
           line({
-            class: "topo-wire", x1: 315, y1: 56, x2: 410, y2: 56,
+            class: "topo-wire", x1: 315, y1: 54, x2: 410, y2: 54,
             stroke: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--proto-uart)" : "#cbd5e1"),
-            "stroke-width": glitchBus === "UART" ? 3.5 : 2.5,
+            "stroke-width": glitchBus === "UART" ? 4 : 3,
             "stroke-dasharray": glitchBus === "UART" ? "5 3" : "none",
             onclick: () => { activeInspTab.val = "WAVE"; }
           }),
-          path({ d: "M 402 52 L 409 56 L 402 60", fill: "none", stroke: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--proto-uart)" : "#cbd5e1"), "stroke-width": 2 }),
-          text({ x: 362, y: 34, fill: glitchBus === "UART" ? "var(--state-glitch)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
-            glitchBus === "UART" ? "Row 13 ⚡GLITCH" : "Row 13 RX"),
+          // Simplex Directional Arrowheads (TX -> RX only)
+          path({ d: "M 235 49 L 244 54 L 235 59 Z", fill: uartLive ? "var(--proto-uart)" : "#cbd5e1" }),
+          path({ d: "M 400 49 L 409 54 L 400 59 Z", fill: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--proto-uart)" : "#cbd5e1") }),
+          text({ x: 197, y: 31, fill: "var(--proto-uart)", "font-size": 10.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "Row 22 (Simplex TX →)"),
+          text({ x: 362, y: 31, fill: glitchBus === "UART" ? "var(--state-glitch)" : "var(--fg-muted)", "font-size": 10.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
+            glitchBus === "UART" ? "Row 13 ⚡GLITCH" : "Row 13 (→ RX Only)"),
 
           // 2. Probe 1 Tap (Row 22 -> WhatTheFlip GPIO5)
           path({
-            class: "topo-wire", d: "M 197 56 L 197 126 L 105 126 L 105 168",
+            class: "topo-wire", d: "M 197 54 L 197 124 L 105 124 L 105 166",
             stroke: estop ? "#94a3b8" : "var(--proto-uart)", "stroke-width": 1.6, "stroke-dasharray": probeDash, fill: "none",
             onclick: () => { activeInspTab.val = "WAVE"; }
           }),
-          text({ x: 145, y: 120, fill: "var(--proto-uart)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "P1 Sniff"),
+          text({ x: 145, y: 118, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "P1 Sniff"),
 
           // 3. Probe 0 Glitch Tap (WhatTheFlip GPIO4 -> Row 13)
           path({
-            class: "topo-wire", d: "M 155 168 L 155 144 L 362 144 L 362 56",
+            class: "topo-wire", d: "M 155 166 L 155 142 L 362 142 L 362 54",
             stroke: estop ? "#94a3b8" : (glitchBus === "UART" ? "var(--state-glitch)" : "var(--state-warn)"),
             "stroke-width": glitchBus === "UART" ? 2.5 : 1.6, "stroke-dasharray": probeDash, fill: "none",
             onclick: () => { activeInspTab.val = "WAVE"; }
           }),
-          text({ x: 265, y: 138, fill: glitchBus === "UART" ? "var(--state-glitch)" : "var(--state-warn)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
+          text({ x: 265, y: 136, fill: glitchBus === "UART" ? "var(--state-glitch)" : "var(--state-warn)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
             "P0 Glitch"),
 
           // 4. I2C Bus between Daphne & GY-511 (Row 55 SCL / Row 58 SDA)
           path({
-            class: "topo-wire", d: "M 480 92 L 480 118 L 620 118 L 620 138",
+            class: "topo-wire", d: "M 480 90 L 480 116 L 620 116 L 620 136",
             stroke: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : (i2cLive ? "var(--proto-i2c)" : "#cbd5e1"),
             "stroke-width": (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? 3.5 : 2.5, fill: "none",
             onclick: () => { activeInspTab.val = "I2C_TOK"; }
           }),
-          text({ x: 552, y: 110, fill: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : "var(--proto-i2c)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
+          text({ x: 552, y: 108, fill: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
             (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "⚡I²C FAULT" : "I²C Row 55/58"),
 
           // 5. Probes 2 & 3 Tap (WhatTheFlip GPIO6/7 -> I2C Bus)
           path({
-            class: "topo-wire", d: "M 195 196 L 480 196 L 480 118",
+            class: "topo-wire", d: "M 195 194 L 480 194 L 480 116",
             stroke: estop ? "#94a3b8" : "var(--proto-i2c)", "stroke-width": 1.6, "stroke-dasharray": probeDash, fill: "none",
             onclick: () => { activeInspTab.val = "I2C_TOK"; }
           }),
-          text({ x: 338, y: 190, fill: "var(--proto-i2c)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
+          text({ x: 338, y: 188, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
             "P2/P3 (SDA/SCL)"),
 
           // 6. 2.4 GHz RF Link (Iris <-> WhatTheFlip)
           line({
-            class: "topo-wire", x1: 195, y1: 238, x2: 475, y2: 238,
+            class: "topo-wire", x1: 195, y1: 236, x2: 475, y2: 236,
             stroke: glitchBus === "RF" ? "var(--state-glitch)" : (rfLive ? "var(--proto-rf)" : "#cbd5e1"),
             "stroke-width": 2, "stroke-dasharray": "5 4",
             onclick: () => { activeInspTab.val = "RF_RADAR"; }
           }),
-          text({ x: 335, y: 229, fill: glitchBus === "RF" ? "var(--state-glitch)" : "var(--proto-rf)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
+          text({ x: 335, y: 227, fill: glitchBus === "RF" ? "var(--state-glitch)" : "var(--proto-rf)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
             `Zigbee Ch ${zigbeeChannel.val} / Wi-Fi Ch ${wifiActiveCh.val}`),
 
-          // Hardware Nodes (Crisp, non-overlapping, concise)
+          // Hardware Nodes
           // Node 1: Hestia
           g({ class: "topo-node", onclick: () => { activeInspTab.val = "WAVE"; } },
-            rect({ class: "node-box", x: 15, y: 22, width: 135, height: 66, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
-            text({ x: 25, y: 42, fill: "var(--fg-primary)", "font-size": 11.5, "font-weight": "bold", "font-family": "monospace" }, "HESTIA"),
-            text({ x: 25, y: 58, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, "GP0 Simplex TX"),
-            text({ x: 25, y: 74, fill: "var(--fg-muted)", "font-size": 9.5, "font-family": "monospace" }, "115.2 kbps 8N1")
+            rect({ class: "node-box", x: 15, y: 20, width: 135, height: 66, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
+            text({ x: 25, y: 40, fill: "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "HESTIA"),
+            text({ x: 25, y: 56, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, "GP0 Simplex TX"),
+            text({ x: 25, y: 72, fill: "var(--fg-muted)", "font-size": 9.5, "font-family": "monospace" }, "1-Line Mono Out")
           ),
 
           // Node 2: Resistor R1 (220 Ohm)
           g({ class: "topo-node", onclick: () => { activeInspTab.val = "WAVE"; } },
-            rect({ class: "node-box", x: 245, y: 40, width: 70, height: 32, rx: 3, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
-            text({ x: 280, y: 60, fill: "var(--fg-primary)", "font-size": 10.5, "font-weight": "bold", "font-family": "monospace", "text-anchor": "middle" }, "R1 220Ω")
+            rect({ class: "node-box", x: 245, y: 38, width: 70, height: 32, rx: 3, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
+            text({ x: 280, y: 58, fill: "var(--fg-primary)", "font-size": 10.5, "font-weight": "bold", "font-family": "monospace", "text-anchor": "middle" }, "R1 220Ω")
           ),
 
           // Node 3: Daphne
           g({ class: "topo-node", onclick: () => { activeInspTab.val = "I2C_TOK"; } },
-            rect({ class: "node-box", x: 410, y: 22, width: 145, height: 70, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
-            text({ x: 420, y: 42, fill: "var(--fg-primary)", "font-size": 11.5, "font-weight": "bold", "font-family": "monospace" }, "DAPHNE"),
-            text({ x: 420, y: 58, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, "GP1 RX • BER Check"),
-            text({ x: 420, y: 74, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, `I²C Master • GP${8 + tiltSlot}`)
+            rect({ class: "node-box", x: 410, y: 20, width: 145, height: 70, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
+            text({ x: 420, y: 40, fill: "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "DAPHNE"),
+            text({ x: 420, y: 56, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, "GP1 Simplex RX"),
+            text({ x: 420, y: 72, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, `I²C Master • GP${8 + tiltSlot}`)
           ),
 
-          // Node 4: GY-511 IMU (No faux fallback values; highlights when values change)
+          // Node 4: GY-511 IMU
           g({ class: "topo-node", onclick: () => { activeInspTab.val = "I2C_TOK"; } },
             rect({
-              class: "node-box", x: 565, y: 138, width: 105, height: 72, rx: 4,
+              class: "node-box", x: 565, y: 136, width: 105, height: 72, rx: 4,
               fill: i2cDelta ? "var(--proto-i2c-bg)" : "#ffffff",
               stroke: i2cDelta ? "var(--proto-i2c)" : "rgba(2,132,199,0.28)",
               "stroke-width": i2cDelta ? 2 : 1.2
             }),
-            text({ x: 575, y: 157, fill: "var(--proto-i2c)", "font-size": 11, "font-weight": "bold", "font-family": "monospace" }, "GY-511 IMU"),
+            text({ x: 575, y: 155, fill: "var(--proto-i2c)", "font-size": 11, "font-weight": "bold", "font-family": "monospace" }, "GY-511 IMU"),
             accelX.val !== null
               ? g(
-                  text({ x: 575, y: 174, fill: "var(--fg-primary)", "font-size": 9.5, "font-weight": "bold", "font-family": "monospace" }, `X:${accelX.val} Y:${accelY.val}`),
-                  text({ x: 575, y: 190, fill: "var(--fg-primary)", "font-size": 9.5, "font-weight": "bold", "font-family": "monospace" }, `Z:${accelZ.val} mg`),
-                  i2cDelta ? text({ x: 575, y: 204, fill: "var(--proto-i2c)", "font-size": 8.5, "font-weight": "bold", "font-family": "monospace" }, "Δ 0x19 UPDATED") : null
+                  text({ x: 575, y: 172, fill: "var(--fg-primary)", "font-size": 10, "font-weight": "bold", "font-family": "monospace" }, `X:${accelX.val} Y:${accelY.val}`),
+                  text({ x: 575, y: 188, fill: "var(--fg-primary)", "font-size": 10, "font-weight": "bold", "font-family": "monospace" }, `Z:${accelZ.val} mg`),
+                  i2cDelta ? text({ x: 575, y: 202, fill: "var(--proto-i2c)", "font-size": 9, "font-weight": "bold", "font-family": "monospace" }, "Δ 0x19 UPDATED") : null
                 )
-              : text({ x: 575, y: 180, fill: "var(--fg-dim)", "font-size": 9.5, "font-family": "monospace" }, "NO SENSOR DATA")
+              : text({ x: 575, y: 178, fill: "var(--fg-dim)", "font-size": 9.5, "font-family": "monospace" }, "NO SENSOR DATA")
           ),
 
           // Node 5: WhatTheFlip Controller
           g({ class: "topo-node", onclick: () => { activeInspTab.val = "RTOS"; } },
-            rect({ class: "node-box", x: 15, y: 168, width: 180, height: 84, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
-            text({ x: 25, y: 188, fill: "var(--fg-primary)", "font-size": 11.5, "font-weight": "bold", "font-family": "monospace" }, "WHATTHEFLIP"),
-            text({ x: 25, y: 205, fill: "var(--proto-uart)", "font-size": 9.5, "font-family": "monospace" }, "P0/P1: UART Glitch/Sniff"),
-            text({ x: 25, y: 221, fill: "var(--proto-i2c)", "font-size": 9.5, "font-family": "monospace" }, "P2/P3: I²C ACK/Stretch"),
-            text({ x: 25, y: 238, fill: estop ? "var(--state-glitch)" : "var(--proto-rf)", "font-size": 9.5, "font-family": "monospace", "font-weight": estop ? "bold" : "normal" },
+            rect({ class: "node-box", x: 15, y: 166, width: 180, height: 84, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.18)", "stroke-width": 1.2 }),
+            text({ x: 25, y: 186, fill: "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "WHATTHEFLIP"),
+            text({ x: 25, y: 203, fill: "var(--proto-uart)", "font-size": 10, "font-family": "monospace" }, "P0/P1: UART Glitch/Sniff"),
+            text({ x: 25, y: 219, fill: "var(--proto-i2c)", "font-size": 10, "font-family": "monospace" }, "P2/P3: I²C ACK/Stretch"),
+            text({ x: 25, y: 236, fill: estop ? "var(--state-glitch)" : "var(--proto-rf)", "font-size": 10, "font-family": "monospace", "font-weight": estop ? "bold" : "normal" },
               estop ? "GPIO9 E-STOP: HIGH-Z" : "2.4 GHz Zigbee / Wi-Fi")
           ),
 
           // Node 6: Iris (Wireless Victim)
           g({ class: "topo-node", onclick: () => { activeInspTab.val = "RF_RADAR"; } },
-            rect({ class: "node-box", x: 475, y: 214, width: 195, height: 48, rx: 4, fill: "#ffffff", stroke: "rgba(124,58,237,0.28)", "stroke-width": 1.2 }),
-            text({ x: 485, y: 233, fill: "var(--proto-rf)", "font-size": 11.5, "font-weight": "bold", "font-family": "monospace" }, "IRIS (WIRELESS)"),
-            text({ x: 485, y: 250, fill: () => irisVerified.val ? "var(--proto-uart)" : "var(--fg-dim)", "font-size": 9.5, "font-family": "monospace", "font-weight": "bold" },
+            rect({ class: "node-box", x: 475, y: 212, width: 195, height: 48, rx: 4, fill: "#ffffff", stroke: "rgba(124,58,237,0.28)", "stroke-width": 1.2 }),
+            text({ x: 485, y: 231, fill: "var(--proto-rf)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "IRIS (WIRELESS)"),
+            text({ x: 485, y: 248, fill: () => irisVerified.val ? "var(--proto-uart)" : "var(--fg-dim)", "font-size": 10, "font-family": "monospace", "font-weight": "bold" },
               () => irisVerified.val ? `Ch ${zigbeeChannel.val} (${irisRate.val} • ${irisRssi.val} dBm)` : `OFFLINE`)
           ),
 
-          // Animated PDU Pills ONLY rendered when live hardware packets are actively flowing,
-          // and dynamic hex/payload labels ONLY shown when values change
+          // Single Simplex UART PDU Envelope traveling left-to-right (Hestia -> R1 -> Daphne)
           uartLive ? g({
-            class: "pdu-pill", transform: `translate(${pduUartCleanX}, 48)`,
-            onclick: () => { isPaused.val = true; activeInspTab.val = "WAVE"; }
-          },
-            rect({ x: 0, y: 0, width: 32, height: 16, rx: 3, fill: "var(--proto-uart)" }),
-            text({ x: 16, y: 11, fill: "#ffffff", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" }, "TX")
-          ) : null,
-
-          uartLive ? g({
-            class: "pdu-pill", transform: `translate(${pduUartOutX}, 48)`,
+            class: "pdu-pill", transform: `translate(${pduUartX}, 46)`,
             onclick: () => { isPaused.val = true; activeInspTab.val = "WAVE"; }
           },
             rect({
-              x: 0, y: 0, width: uartDelta ? 42 : 32, height: 16, rx: 3,
-              fill: glitchBus === "UART" ? "var(--state-glitch)" : "var(--proto-uart)"
+              x: 0, y: 0, width: (pduPastR1 && uartDelta) ? 44 : 34, height: 16, rx: 3,
+              fill: (pduPastR1 && glitchBus === "UART") ? "var(--state-glitch)" : "var(--proto-uart)"
             }),
             text({
-              x: uartDelta ? 21 : 16, y: 11, fill: "#ffffff",
+              x: (pduPastR1 && uartDelta) ? 22 : 17, y: 11, fill: "#ffffff",
               "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold"
-            }, glitchBus === "UART" ? "⚡ERR" : (uartDelta ? "ΔCRC" : "RX"))
+            }, (pduPastR1 && glitchBus === "UART") ? "⚡ERR" : (uartDelta ? "ΔTX→" : "TX→"))
           ) : null,
 
           // Dynamic hex byte pill (0x19) ONLY displayed when sensor values change or glitch is active
           (i2cLive && i2cDelta) ? g({
-            class: "pdu-pill", transform: `translate(${pduI2cX}, 110)`,
+            class: "pdu-pill", transform: `translate(${pduI2cX}, 108)`,
             onclick: () => { activeInspTab.val = "I2C_TOK"; }
           },
             rect({ x: 0, y: 0, width: 38, height: 16, rx: 3, fill: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : "var(--proto-i2c)" }),
@@ -801,7 +799,7 @@ function BreadboardCanvas() {
           ) : null,
 
           (rfLive && rfDelta) ? g({
-            class: "pdu-pill", transform: `translate(${pduRfX}, 230)`,
+            class: "pdu-pill", transform: `translate(${pduRfX}, 228)`,
             onclick: () => { activeInspTab.val = "RF_RADAR"; }
           },
             rect({ x: 0, y: 0, width: 38, height: 16, rx: 3, fill: glitchBus === "RF" ? "var(--state-glitch)" : "var(--proto-rf)" }),

@@ -48,8 +48,8 @@ package "breadboard" as BB #ECFDF5 {
     component "I2C bus (Row 55/58)" as BUS #A7F3D0
     component "GY-511" as IMU #34D399
 
-    A_PINS -right-> R1 : Row 22
-    R1 -right-> B_RX : Row 13
+    A_PINS -right-> R1 : Row 22 (Simplex TX)
+    R1 -right-> B_RX : Row 13 (Simplex RX)
     B_I2C -- BUS
     BUS -- IMU
 }
@@ -60,7 +60,7 @@ P2 -right-> BUS : SDA / ACK-kill
 P3 -right-> BUS : SCL / clock-stretch
 
 package "iris" as WV #EFF6FF {
-    component "SoftAP (Ch 6)\n802.15.4 (Ch 15)" as RF #BFDBFE
+    component "SoftAP (Ch 6)\nZigbee (Ch 15)" as RF #BFDBFE
 }
 
 RF -.- TOOL : 2.4 GHz
