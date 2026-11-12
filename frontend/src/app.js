@@ -46,6 +46,7 @@ const accelX             = van.state(-28);
 const accelY             = van.state(54);
 const accelZ             = van.state(981);
 const accelAvgX          = van.state(-28);
+const rawRegHex          = van.state("E4 FF 36 00 D5 03");
 const magStr             = van.state("X:-305 Y:52 Z:61");
 const animPhase          = van.state(0);
 const uptimeS            = van.state(0);
@@ -55,14 +56,13 @@ const filterProtocol     = van.state("ALL");
 const filterSearchText   = van.state("");
 const sortColumn         = van.state("id");
 const sortAscending      = van.state(false);
-const hurryModeEnabled   = van.state(true);
+const hurryModeEnabled   = van.state(false);
 
 // PCAP Audit Counters
 const pcapAuditTotal     = van.state(0);
 const pcapAuditNominal   = van.state(0);
 const pcapAuditFaults    = van.state(0);
 const pcapAuditRecovered = van.state(0);
-
 const selectedPacket     = van.state(null);
 const packets            = van.state([]);
 
@@ -112,7 +112,11 @@ function triggerHardwareCommand(cmd, feedbackText, glitchBus = "") {
   }
   showToast(`${feedbackText} — relaying to ESP32...`);
   fetch("/cmd?c=" + cmd, { method: "POST" })
-    .then(() => showToast(`${feedbackText} — ✅ sent to hardware (watch ESP32 serial for confirmation)`))
+    .then(() => {
+      showToast(`${feedbackText} — ✅ sent to hardware`);
+      fetchNextPcapChunk(false);
+      setTimeout(() => fetchNextPcapChunk(false), 180);
+    })
     .catch(() => showToast(`${feedbackText} — ❌ FAILED: ESP32 not reachable`));
 }
 
@@ -279,6 +283,7 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
   } else if (protoId === 5) {
     proto    = "ZIGBEE";
     tagClass = "zigbee";
+    chan     = `Zigbee Ch ${probeId}`;
     let ascii = "";
     for (let i = 0; i < body.length; i++) {
       if (body[i] >= 32 && body[i] <= 126) ascii += String.fromCharCode(body[i]);
@@ -289,20 +294,24 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
       irisRate.val = "2 Hz";
     }
     let seqNum = body.length >= 3 ? body[2] : 0;
-    summary = `802.15.4 PAN 0x1234 Seq #${seqNum} ${ascii ? `("${ascii}")` : ""}`;
+    summary = `Zigbee PAN 0x1234 Seq #${seqNum} ${ascii ? `("${ascii}")` : ""}`;
+  } else if (protoId === 3) {
     proto    = "FAULT";
     tagClass = "fault";
     chan     = `Probe ${probeId}`;
     isFault  = true;
     clientCorruptFrames++;
     recomputeClientBer();
+    let ascii = "";
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] >= 32 && body[i] <= 126) ascii += String.fromCharCode(body[i]);
+    }
     let faultDesc = probeId === 0 ? "10 µs UART1 TX Bit-Flip on Row 13 (15.0 mA across R1 220 Ω)"
                   : probeId === 2 ? "50 µs I2C0 9th-Clock ACK-Kill on Row 58 SDA -> Daphne 9-Clock Recovery"
                   : probeId === 3 ? "50 µs I2C0 Clock-Stretch on Row 55 SCL"
-                  : "Targeted 802.15.4 Jam Burst on Ch 15 -> Iris 02:00:00:00:00:03";
-    summary = `⚡ HARDWARE FAULT INJECTED: ${faultDesc}`;
+                  : "Targeted Zigbee Jam Burst on Ch 15 -> Iris 02:00:00:00:00:03";
+    summary = `⚡ FAULT INJECTED: ${ascii || faultDesc}`;
   }
-
   pcapAuditTotal.val++;
   if (isFault) {
     pcapAuditFaults.val++;
@@ -329,7 +338,7 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
 
 let s_pcapStreamOffset = 0;
 let s_pcapCarryBuffer  = new Uint8Array(0);
-const PCAP_BATCH_LIMIT = 4096;
+const PCAP_BATCH_LIMIT = 16384;
 
 function concatUint8(a, bVal) {
   if (a.length === 0) return bVal;
@@ -374,33 +383,70 @@ function parseIncomingPcapBytes(chunkBytes, isFromStart) {
   if (newRecords.length > 0 && !isPaused.val) {
     let merged = [...newRecords.reverse(), ...packets.val].slice(0, 500);
     packets.val = merged;
-    if (!selectedPacket.val && merged.length > 0) {
+    let latestFault = newRecords.find(r => r.isFault || r.tagClass === "fault");
+    if (latestFault) {
+      selectedPacket.val = latestFault;
+    } else if (!selectedPacket.val && merged.length > 0) {
       selectedPacket.val = merged[0];
     }
   }
 }
 
+let s_fetchingPcap = false;
 async function fetchNextPcapChunk(forceManual = false) {
+  if (s_fetchingPcap) return;
+  s_fetchingPcap = true;
   try {
-    let isStart = (s_pcapStreamOffset === 0);
-    let resp    = await fetch(`/api/pcap?offset=${s_pcapStreamOffset}&limit=${PCAP_BATCH_LIMIT}`);
-    if (!resp.ok) return;
+    let loops = 0;
+    while (loops < 4) {
+      loops++;
+      let isStart = (s_pcapStreamOffset === 0);
+      let resp    = await fetch(`/api/pcap?offset=${s_pcapStreamOffset}&limit=${PCAP_BATCH_LIMIT}`);
+      if (!resp.ok) break;
 
-    let totalHeader = resp.headers.get("X-Pcap-Total-Bytes");
-    if (totalHeader) {
-      let totalVal = parseInt(totalHeader, 10);
-      if (!isNaN(totalVal) && totalVal > 0) pcapSize.val = totalVal;
-    }
+      let totalHeader = resp.headers.get("X-Pcap-Total-Bytes");
+      let totalVal = 0;
+      if (totalHeader) {
+        totalVal = parseInt(totalHeader, 10);
+        if (!isNaN(totalVal) && totalVal > 0) pcapSize.val = totalVal;
+      }
 
-    let arrayBuf = await resp.arrayBuffer();
-    let bytes    = new Uint8Array(arrayBuf);
-    if (bytes.length > 0) {
-      parseIncomingPcapBytes(bytes, isStart);
-      s_pcapStreamOffset += bytes.length;
-      pcapSyncedBytes.val = s_pcapStreamOffset;
-      if (forceManual) showToast(`Synced ${bytes.length} B from /CAPTURE.PCAP`);
+      // Jump to tail if initial backlog is huge (> 32 KB) so live view starts immediately
+      if (isStart && totalVal > 32768) {
+        let hdrBuf = await resp.arrayBuffer();
+        let hdrBytes = new Uint8Array(hdrBuf).slice(0, 24);
+        parseIncomingPcapBytes(hdrBytes, true);
+        s_pcapStreamOffset = 24;
+        // Fetch the full stream in 16KB chunks up to current tail
+        while (s_pcapStreamOffset < totalVal) {
+          let r2 = await fetch(`/api/pcap?offset=${s_pcapStreamOffset}&limit=16384`);
+          if (!r2.ok) break;
+          let b2 = new Uint8Array(await r2.arrayBuffer());
+          if (b2.length === 0) break;
+          parseIncomingPcapBytes(b2, false);
+          s_pcapStreamOffset += b2.length;
+          pcapSyncedBytes.val = s_pcapStreamOffset;
+        }
+        break;
+      }
+
+      let arrayBuf = await resp.arrayBuffer();
+      let bytes    = new Uint8Array(arrayBuf);
+      if (bytes.length > 0) {
+        parseIncomingPcapBytes(bytes, isStart);
+        s_pcapStreamOffset += bytes.length;
+        pcapSyncedBytes.val = s_pcapStreamOffset;
+        if (forceManual) showToast(`Synced ${bytes.length} B`);
+        if (totalVal > s_pcapStreamOffset && bytes.length >= PCAP_BATCH_LIMIT) {
+          continue;
+        }
+      }
+      break;
     }
-  } catch (e) {}
+  } catch (e) {
+  } finally {
+    s_fetchingPcap = false;
+  }
 }
 
 function handlePcapFileUpload(e) {
@@ -1226,7 +1272,7 @@ function BottomWiresharkPane() {
         onclick: () => { filterProtocol.val = "ALL"; filterSearchText.val = ""; }
       }, "Clear"),
       () => span({ class: "mono", style: "font-size:11px;color:var(--fg-muted)" },
-        `${packets.val.length} frames parsed`)
+        `${pcapAuditTotal.val} total (${packets.val.length} buffered)`)
     ),
     div({ class: "ws-split" },
       // Left 62%: Sortable Packet Table
@@ -1319,15 +1365,19 @@ function BottomWiresharkPane() {
       div({ class: "ws-hex-pane" },
         () => {
           let p = selectedPacket.val;
+          let tot = pcapAuditTotal.val;
+          let nom = pcapAuditNominal.val;
+          let flt = pcapAuditFaults.val;
+          let rec = pcapAuditRecovered.val;
           return div(
             div({ class: "pcap-audit-box" },
               div({ style: "font-weight:800;color:var(--proto-i2c);margin-bottom:2px" },
-                "PCAP SESSION AUDIT (MICROSD /CAPTURE.PCAP)"),
+                "SESSION AUDIT"),
               div({ style: "display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:11px" },
-                div("Total Captured: ", strong(`${pcapAuditTotal.val} frames`)),
-                div("Nominal Polls: ", strong({ style: "color:var(--proto-uart)" }, `${pcapAuditNominal.val}`)),
-                div("Faults Injected: ", strong({ style: "color:var(--state-glitch)" }, `${pcapAuditFaults.val}`)),
-                div("I2C Self-Healed: ", strong({ style: "color:var(--proto-i2c)" }, `${pcapAuditRecovered.val}`))
+                div("Total Frames: ", strong(`${tot}`)),
+                div("Nominal Polls: ", strong({ style: "color:var(--proto-uart)" }, `${nom}`)),
+                div("Faults Injected: ", strong({ style: "color:var(--state-glitch)" }, `${flt}`)),
+                div("I2C Recovered: ", strong({ style: "color:var(--proto-i2c)" }, `${rec}`))
               )
             ),
             div({ style: "display:flex;justify-content:space-between;color:var(--fg-muted);border-bottom:1px solid var(--border-subtle);padding-bottom:2px;margin-top:4px" },
@@ -1411,10 +1461,8 @@ function connectDataStream() {
   }, 500);
 
   setInterval(() => {
-    if (pcapSize.val > s_pcapStreamOffset) {
-      fetchNextPcapChunk(false);
-    }
-  }, 800);
+    fetchNextPcapChunk(false);
+  }, 400);
 
   let wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   let wsHost = window.location.port === "8888" ? "localhost:8889" : window.location.host;

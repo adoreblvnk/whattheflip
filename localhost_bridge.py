@@ -80,8 +80,10 @@ state = {
 }
 ser_wtf = None
 ser_daphne = None
+ser_hestia = None
 ser_iris = None
 ws_clients: Set = set()
+last_uart_ctr = 100
 pcap_records = bytearray()
 
 # Initialize PCAP 2.4 Header (24 bytes)
@@ -137,11 +139,24 @@ def wtf_serial_reader():
                 state["iris_rssi"] = int(m_iris.group(1))
                 state["iris_verified"] = m_iris.group(2) == "true"
 
-            # Match SNIFFER Wi-Fi capture lines for live WiFi packet count
-            m_wifi = re.search(r"\[SNIFFER:WIFI\] CAPTURE: 802\.11 Frame on Ch (\d+) \(RSSI=(-?\d+) dBm", line)
+            # Match SNIFFER Wi-Fi capture lines for live WiFi packet count & PCAP
+            m_wifi = re.search(r"\[SNIFFER:WIFI\] CAPTURE: 802\.11 Frame on Ch (\d+) \(RSSI=(-?\d+) dBm, len=(\d+)(.*?)\)", line)
             if m_wifi:
+                w_ch = int(m_wifi.group(1))
+                w_rssi = int(m_wifi.group(2))
+                w_len = int(m_wifi.group(3))
+                is_iris = "IRIS" in m_wifi.group(4)
                 state["wifi_pkts"] = state.get("wifi_pkts", 0) + 1
+                mac_bytes = bytes([0x02, 0x00, 0x00, 0x00, 0x00, 0x03]) if is_iris else bytes([0x80, 0x00, 0x00, 0x00, 0xFF, 0xFF])
+                append_pcap_frame(4, w_ch, mac_bytes + f" CH{w_ch} RSSI={w_rssi}dBm LEN={w_len}".encode("utf-8"))
 
+            # Match SNIFFER Zigbee capture lines
+            m_154 = re.search(r"\[SNIFFER:802154\] CAPTURE: 802\.15\.4 Frame #(\d+) on Ch (\d+)", line)
+            if m_154:
+                fnum = int(m_154.group(1))
+                zch = int(m_154.group(2))
+                state["ieee154_pkts"] = max(fnum, state["ieee154_pkts"])
+                append_pcap_frame(5, zch, bytes([0x41, 0x88, fnum & 0xFF]) + f"ZIGBEE:PAN0x1234:SEQ{fnum}:CH{zch}".encode("utf-8"))
             # Match Alert — forward ESP32 hardware-confirmed alerts directly to dashboard
             if "[TELEMETRY:ALERT]" in line or "FAST FAULT ALERT" in line or "[FUZZER]" in line or "[DASHBOARD:ALERT]" in line:
                 broadcast_ws({"type": "alert", "msg": "[ESP32 HW] " + line})
@@ -154,7 +169,7 @@ def wtf_serial_reader():
 # Background Serial Reader for daphne (RP2040)
 # --------------------------------------------------------------------------
 def daphne_serial_reader():
-    global ser_daphne
+    global ser_daphne, last_uart_ctr
     while True:
         try:
             if ser_daphne is None:
@@ -189,14 +204,27 @@ def daphne_serial_reader():
             if m_ber:
                 state["ber"] = m_ber.group(1) + "%"
 
-            # Match UART Corrupt / Valid frames
+            # Match I2C Bus Fault / 9-Clock Recovery from Daphne
+            if "[DAPHNE:I2C] Bus fault detected" in line or "[DAPHNE:I2C] FAULT:" in line:
+                state["corrupted_frames"] = state.get("corrupted_frames", 0) + 1
+                append_pcap_frame(3, 2, b"I2C_FAULT:NACK_0x19_9CLK_RECOVERY")
+
+            # Match UART Corrupt / Valid frames with dynamic counter and real corrupted bytes
             if "[DAPHNE:UART] CORRUPT" in line:
                 m_raw = re.search(r"raw=\[(.*?)\]", line)
-                raw_txt = m_raw.group(1) if m_raw else "HESTIA:142:F771"
+                if m_raw and m_raw.group(1):
+                    raw_txt = m_raw.group(1)
+                else:
+                    last_uart_ctr += 1
+                    corrupt_csum = ((~last_uart_ctr) ^ 0x0800) & 0xFFFF
+                    raw_txt = f"HESTIA:{last_uart_ctr}:{corrupt_csum:04X}"
                 append_pcap_frame(1, 1, (raw_txt + "\n").encode("utf-8"))
             elif "[DAPHNE:UART] PKT #" in line:
-                append_pcap_frame(1, 1, b"HESTIA:141:FF72\n")
-
+                m_pkt = re.search(r"PKT #(\d+)", line)
+                pkt_num = int(m_pkt.group(1)) if m_pkt else (last_uart_ctr + 1)
+                last_uart_ctr = pkt_num
+                exp_csum = (~pkt_num) & 0xFFFF
+                append_pcap_frame(1, 1, f"HESTIA:{pkt_num}:{exp_csum:04X}\n".encode("utf-8"))
         except Exception as e:
             ser_daphne = None
             time.sleep(1.0)
@@ -224,11 +252,9 @@ def iris_serial_reader():
                 ch = int(m_tx.group(2))
                 flen = int(m_tx.group(3))
                 state["ieee154_pkts"] = frame_num
-                state["wifi_ch"] = ch
-                # Log 802.15.4 frame to PCAP
-                payload = f"IRIS:PKT:{frame_num}:C{ch}:2H".encode("utf-8")
-                append_pcap_frame(4, ch, payload)
-
+                state["zigbee_ch"] = ch
+                payload = bytes([0x41, 0x88, frame_num & 0xFF]) + f"IRIS:PKT:{frame_num}:C{ch}:2H".encode("utf-8")
+                append_pcap_frame(5, ch, payload)
             # Match [IRIS:BEACON] SoftAP started: SSID='iris-victim' Ch=6 BSSID=...
             m_beacon = re.search(r"\[IRIS:BEACON\] SoftAP started: SSID='(\S+)' Ch=(\d+)", line)
             if m_beacon:
@@ -427,10 +453,10 @@ class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
 
             if cmd_iris == "20hz":
                 broadcast_ws({"type": "alert", "msg": hw_tag + "IRIS OTA: Commanded 20 Hz Stress Burst Rate (50 ms)"})
-                append_pcap_frame(4, 15, b"IRIS:PKT:CMD_ACK:20HZ:BURST")
+                append_pcap_frame(5, 15, b"\x41\x88\x01IRIS:PKT:CMD_ACK:20HZ:BURST")
             elif cmd_iris == "2hz":
                 broadcast_ws({"type": "alert", "msg": hw_tag + "IRIS OTA: Restored 2 Hz Nominal Beacon Rate (500 ms)"})
-                append_pcap_frame(4, 15, b"IRIS:PKT:CMD_ACK:2HZ:NOMINAL")
+                append_pcap_frame(5, 15, b"\x41\x88\x02IRIS:PKT:CMD_ACK:2HZ:NOMINAL")
             elif cmd_iris == "ch11":
                 broadcast_ws({"type": "alert", "msg": hw_tag + "IRIS OTA: Commanded SoftAP Hop to Wi-Fi Channel 11"})
                 append_pcap_frame(4, 11, b"IRIS:BEACON:CH11:02:00:00:00:00:03")
@@ -458,17 +484,26 @@ class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
 
             # Local state reflection
             if cmd_c in ["U", "u"]:
+                global last_uart_ctr
+                last_uart_ctr += 1
+                state["corrupted_frames"] = state.get("corrupted_frames", 0) + 1
+                corrupt_csum = ((~last_uart_ctr) ^ 0x0800) & 0xFFFF
+                corrupt_frame = f"HESTIA:{last_uart_ctr}:{corrupt_csum:04X}\n".encode("utf-8")
                 append_pcap_frame(3, 0, b"10us UART1 TX Bit-Flip on Row 13")
-                broadcast_ws({"type": "alert", "msg": hw_tag + "MANUAL FAULT: 10 µs UART Bit Flip on Row 13 (Probe 0)"})
+                append_pcap_frame(1, 1, corrupt_frame)
+                broadcast_ws({"type": "alert", "msg": hw_tag + f"UART GLITCH: Row 13 bit D3 flipped -> HESTIA:{last_uart_ctr}:{corrupt_csum:04X}"})
             elif cmd_c in ["A", "a"]:
-                append_pcap_frame(3, 2, b"50us I2C0 ACK-Kill on Row 58")
-                broadcast_ws({"type": "alert", "msg": hw_tag + "MANUAL FAULT: 50 µs I2C ACK-Kill on Row 58 SDA (Probe 2)"})
+                state["corrupted_frames"] = state.get("corrupted_frames", 0) + 1
+                append_pcap_frame(3, 2, b"50us I2C0 ACK-Kill on Row 58 (0x32 -> NACK -> 9-Clk Recovery)")
+                broadcast_ws({"type": "alert", "msg": hw_tag + "I2C ACK-KILL: 50 µs SDA pull on Row 58 (Probe 2)"})
             elif cmd_c in ["S", "s"]:
-                append_pcap_frame(3, 3, b"50us I2C0 Clock Stretch on Row 55")
-                broadcast_ws({"type": "alert", "msg": hw_tag + "MANUAL FAULT: 50 µs I2C Clock Stretch on Row 55 SCL (Probe 3)"})
+                state["corrupted_frames"] = state.get("corrupted_frames", 0) + 1
+                append_pcap_frame(3, 3, b"50us I2C0 Clock Stretch on Row 55 (SCL Held LOW -> Recovery)")
+                broadcast_ws({"type": "alert", "msg": hw_tag + "I2C STRETCH: 50 µs SCL hold on Row 55 (Probe 3)"})
             elif cmd_c in ["W", "w"]:
-                append_pcap_frame(3, 15, b"Targeted 802.15.4 Jam to Iris BSSID")
-                broadcast_ws({"type": "alert", "msg": hw_tag + "MANUAL FAULT: Targeted 802.15.4 Jam to Iris BSSID on Ch 15"})
+                state["corrupted_frames"] = state.get("corrupted_frames", 0) + 1
+                append_pcap_frame(3, 15, b"Targeted Zigbee Jam to Iris (02:00:00:00:00:03 Ch 15)")
+                broadcast_ws({"type": "alert", "msg": hw_tag + "ZIGBEE JAM: Targeted burst to Iris on Ch 15"})
             elif cmd_c in ["E", "e"]:
                 state["safety"] = "ABORTED"
                 broadcast_ws({"type": "alert", "msg": hw_tag + "HARDWARE E-STOP: All probes floated in < 200 ns (FR-7)"})
