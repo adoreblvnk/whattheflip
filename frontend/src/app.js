@@ -182,7 +182,19 @@ function clearAllStats() {
   selectedPacket.val = null;
   latestUartSent.val = "";
   latestUartRecv.val = "";
-  triggerHardwareCommand("C", "Stats cleared and fault injection stopped");
+  uartClear.val = false;
+  uartSample.val = "";
+  wifiClear.val = false;
+  wifiSample.val = "";
+  z154Clear.val = false;
+  z154Sample.val = "";
+  ctfUart.val = "";
+  ctfWifi.val = "";
+  ctfZigbee.val = "";
+  ctfBonus.val = "";
+  ctfImask.val = 0;
+  ctfEmask.val = 0;
+  triggerHardwareCommand("C", "Stats and messages cleared");
 }
 
 let wifiAutoScanning = false;
@@ -1382,10 +1394,10 @@ function updateFromTelemetry(d) {
   if (d.iris_verified != null) irisVerified.val = d.iris_verified;
 
   if (d.ctf) {
-    if (d.ctf.uart) ctfUart.val = d.ctf.uart;
-    if (d.ctf.wifi) ctfWifi.val = d.ctf.wifi;
-    if (d.ctf.zigbee) ctfZigbee.val = d.ctf.zigbee;
-    if (d.ctf.bonus) ctfBonus.val = d.ctf.bonus;
+    ctfUart.val = d.ctf.uart || "";
+    ctfWifi.val = d.ctf.wifi || "";
+    ctfZigbee.val = d.ctf.zigbee || "";
+    ctfBonus.val = d.ctf.bonus || "";
     if (d.ctf.imask != null) ctfImask.val = d.ctf.imask;
     if (d.ctf.emask != null) ctfEmask.val = d.ctf.emask;
   }

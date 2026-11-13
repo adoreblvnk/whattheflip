@@ -215,9 +215,21 @@ EXPORT void wtf_sniffer_clear_stats(void)
     s_wifi_capture_count = 0U;
     s_154_capture_count  = 0U;
     s_i2c_capture_count  = 0U;
+    s_uart_last_clear    = false;
     s_uart_last_sample[0] = '\0';
+    s_wifi_last_clear    = false;
+    s_wifi_sample_ch     = 0U;
+    s_wifi_channel_mode  = 0U;
     s_wifi_last_sample[0] = '\0';
-    s_154_last_sample[0]  = '\0';
+    s_154_last_clear     = false;
+    s_154_channel        = 0U;
+    s_154_last_sample[0] = '\0';
+    s_ctf_uart_flag[0]   = '\0';
+    s_ctf_wifi_flag[0]   = '\0';
+    s_ctf_154_flag[0]    = '\0';
+    s_ctf_bonus_flag[0]  = '\0';
+    s_intercept_mask     = 0U;
+    s_exploit_mask       = 0U;
 }
 
 EXPORT void wtf_sniffer_mark_exploit(uint8_t proto)
