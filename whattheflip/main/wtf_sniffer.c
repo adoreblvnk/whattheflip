@@ -870,8 +870,11 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
 
             if (flen > 0U && sniffer_mode_allows(PROTO_I2C)) {
                 s_i2c_capture_count++;
+                if (s_i2c_capture_count >= 3U) {
+                    s_intercept_mask |= (1U << 1);
+                    sniffer_check_bonus_unlock();
+                }
                 decode_i2c_gy511_frame(local_bytes, flen);
-
                 wtf_record_t rec;
                 rec.timestamp_us = fts;
                 rec.protocol = PROTO_I2C;

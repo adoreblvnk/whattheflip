@@ -290,7 +290,7 @@ async function triggerZigbeeAutoScan() {
   for (let ch = 11; ch <= 26; ch++) {
     if (!zigbeeAutoScanning || toolMode.val !== "ZIGBEE" || safetyState.val === "Stopped") break;
     selectZigbeeChannel(ch);
-    await new Promise(r => setTimeout(r, 420));
+    await new Promise(r => setTimeout(r, 520));
     if (z154Clear.val) {
       showToast(`Locked Iris Zigbee on Ch ${ch}`);
       break;
