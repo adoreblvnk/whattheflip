@@ -33,17 +33,18 @@ static volatile bool s_fuzzer_cancelled   = false;
 static bool s_wtf_espnow_ready            = false;
 static void fuzzer_hw_init(void)
 {
-    /* Keep Probes 0, 2, and 3 in high-Z mode during idle */
+    /* Keep Probes 0, 2, and 3 output-disabled (High-Z) without clobbering P2/P3 sniffer IRAM interrupts */
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << WTF_PIN_PROBE0_GLITCH) |
-                        (1ULL << WTF_PIN_PROBE2_SDA)    |
-                        (1ULL << WTF_PIN_PROBE3_SCL),
+        .pin_bit_mask = (1ULL << WTF_PIN_PROBE0_GLITCH),
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&io_conf);
+    GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
+                           (1UL << WTF_PIN_PROBE2_SDA)    |
+                           (1UL << WTF_PIN_PROBE3_SCL);
 }
 
 EXPORT void inject_uart_bit_flip_10us(void)

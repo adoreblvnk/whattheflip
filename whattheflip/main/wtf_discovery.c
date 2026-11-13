@@ -134,16 +134,22 @@ EXPORT ER wtf_discovery_remap_probe(uint8_t probe_pin, uint8_t decoder_id)
 
     int64_t t_start = esp_timer_get_time();
 
-    /* 1. Configure the probe pin as high-Z peripheral input (no pull-up so Maker Pi blue LED stays off) */
+    /* 1. Configure the probe pin as high-Z peripheral input (preserve I2C IRAM edge interrupts on P2/P3) */
+    gpio_int_type_t itype = GPIO_INTR_DISABLE;
+    if (decoder_id == WTF_DECODER_I2C0_EXT) {
+        itype = (probe_pin == WTF_PIN_PROBE2_SDA) ? GPIO_INTR_ANYEDGE : GPIO_INTR_POSEDGE;
+    }
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << probe_pin),
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
+        .intr_type    = itype,
     };
     gpio_config(&io_conf);
-
+    if (itype != GPIO_INTR_DISABLE) {
+        (void)gpio_intr_enable(probe_pin);
+    }
     /* 2. Map decoder to ESP32-C6 GPIO Matrix peripheral input signal */
     uint32_t sig_idx = 0U;
     switch (decoder_id) {
