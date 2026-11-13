@@ -117,7 +117,8 @@ function tipHandlers(textStr) {
     title: textStr,
     onmouseenter: (e) => { hoverTip.val = { text: textStr, x: e.clientX + 12, y: e.clientY + 14 }; },
     onmousemove:  (e) => { hoverTip.val = { text: textStr, x: e.clientX + 12, y: e.clientY + 14 }; },
-    onmouseleave: () => { hoverTip.val = null; }
+    onmouseleave: () => { hoverTip.val = null; },
+    onpointerdown: () => { hoverTip.val = null; }
   };
 }
 
@@ -816,13 +817,12 @@ function BreadboardCanvas() {
               irisRssi.val !== null && irisRssi.val > -70 ? `RSSI ${irisRssi.val} dBm` : "2.4 GHz Target")
           ),
 
-          // Live Animated PDU Pills (ONLY when real packets flow in active mode)
-          uartLive ? g({ transform: `translate(${pduUartX}, 46)` },
+          // Live Animated PDU Pills (ONLY when real packets flow in active mode; pass cleanly behind R1)
+          (uartLive && !(pduUartX > 225 && pduUartX < 318)) ? g({ transform: `translate(${pduUartX}, 46)` },
             rect({ x: 0, y: 0, width: 38, height: 16, rx: 3, fill: (pduPastR1 && glitchBus === "UART") ? "var(--state-glitch)" : "var(--proto-uart)" }),
             text({ x: 19, y: 11, fill: "#ffffff", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" },
               (pduPastR1 && glitchBus === "UART") ? "ERR" : "TX->")
           ) : null,
-
           i2cLive ? g({ transform: `translate(${pduI2cX}, 108)` },
             rect({ x: 0, y: 0, width: 38, height: 16, rx: 3, fill: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : "var(--proto-i2c)" }),
             text({ x: 19, y: 11, fill: "#ffffff", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" },
@@ -1402,18 +1402,20 @@ function connectDataStream() {
 }
 
 function App() {
-  return div({ class: "workbench-root" },
+  return div(
     ToastOverlay(),
     TooltipOverlay(),
-    div({ class: "workbench-header" },
-      TopHeaderBar(),
-      ToolBeltBar()
-    ),
-    div({ class: "upper-workbench" },
-      BreadboardCanvas(),
-      ContextualInspectorPane()
-    ),
-    BottomWiresharkPane()
+    div({ class: "workbench-root" },
+      div({ class: "workbench-header" },
+        TopHeaderBar(),
+        ToolBeltBar()
+      ),
+      div({ class: "upper-workbench" },
+        BreadboardCanvas(),
+        ContextualInspectorPane()
+      ),
+      BottomWiresharkPane()
+    )
   );
 }
 
