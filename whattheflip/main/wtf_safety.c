@@ -253,6 +253,10 @@ static void safety_handle_serial_line(const char *line)
     } else if (strncmp(line, "CH", 2) == 0) {
         int ch = atoi(line + 2);
         if (ch >= 1 && ch <= 13) wtf_sniffer_request_wifi_burst((uint8_t)ch);
+    } else if (strcmp(line, "WIFI:AUTO") == 0) {
+        wtf_sniffer_request_wifi_autoscan();
+    } else if (strcmp(line, "ZIGBEE:AUTO") == 0) {
+        wtf_sniffer_request_154_autoscan();
     } else if (strncmp(line, "JAMWIFI:", 8) == 0) {
         int ch = atoi(line + 8);
         if (ch >= 1 && ch <= 13) wtf_fuzzer_inject_wifi_jam((uint8_t)ch);

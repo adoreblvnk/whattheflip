@@ -10,6 +10,8 @@ const safetyState        = van.state("Active"); // "Active" | "Stopped"
 const toastMsg           = van.state("");
 const isPaused           = van.state(false);
 const activeGlitchBus    = van.state(""); // "" | "UART" | "I2C_ACK" | "I2C_STRETCH" | "WIFI" | "ZIGBEE"
+const lastUartGlitch     = van.state("");
+const lastI2cFault       = van.state("");
 
 const toolMode           = van.state("OFF"); // "OFF" | "AUTO" | "UART" | "I2C" | "WIFI" | "ZIGBEE"
 const uartBaud           = van.state(115200);
@@ -182,6 +184,8 @@ function clearAllStats() {
   selectedPacket.val = null;
   latestUartSent.val = "";
   latestUartRecv.val = "";
+  lastUartGlitch.val = "";
+  lastI2cFault.val = "";
   uartClear.val = false;
   uartSample.val = "";
   wifiClear.val = false;
@@ -234,6 +238,7 @@ function selectUartBaud(baud) {
   uartBaud.val = baud;
   uartClear.val = false;
   uartSample.val = "";
+  lastUartGlitch.val = "";
   fetch("/cmd?baud=" + baud, { method: "POST" })
     .then(() => showToast(`UART sniffer set to ${baud} bps`))
     .catch(() => {});
@@ -257,20 +262,15 @@ function selectWifiChannel(ch) {
     .catch(() => {});
 }
 
-async function triggerWifiAutoScan() {
-  if (wifiAutoScanning) return;
+function triggerWifiAutoScan() {
   wifiAutoScanning = true;
-  showToast("Scanning Wi-Fi Ch 1–13...");
-  for (let ch = 1; ch <= 13; ch++) {
-    if (!wifiAutoScanning || toolMode.val !== "WIFI" || safetyState.val === "Stopped") break;
-    selectWifiChannel(ch);
-    await new Promise(r => setTimeout(r, 480));
-    if (wifiClear.val) {
-      showToast(`Locked Iris Wi-Fi on Ch ${ch}`);
-      break;
-    }
-  }
-  wifiAutoScanning = false;
+  wifiLockUntil = 0;
+  wifiClear.val = false;
+  wifiSample.val = "";
+  showToast("Auto-Scanning Wi-Fi Ch 1–13...");
+  fetch("/cmd?wifi_auto=1", { method: "POST" })
+    .catch(() => {});
+  setTimeout(() => { wifiAutoScanning = false; }, 6000);
 }
 
 function jamWifiChannel(ch) {
@@ -295,20 +295,15 @@ function selectZigbeeChannel(ch) {
     .catch(() => {});
 }
 
-async function triggerZigbeeAutoScan() {
-  if (zigbeeAutoScanning) return;
+function triggerZigbeeAutoScan() {
   zigbeeAutoScanning = true;
-  showToast("Scanning Zigbee Ch 11–26...");
-  for (let ch = 11; ch <= 26; ch++) {
-    if (!zigbeeAutoScanning || toolMode.val !== "ZIGBEE" || safetyState.val === "Stopped") break;
-    selectZigbeeChannel(ch);
-    await new Promise(r => setTimeout(r, 520));
-    if (z154Clear.val) {
-      showToast(`Locked Iris Zigbee on Ch ${ch}`);
-      break;
-    }
-  }
-  zigbeeAutoScanning = false;
+  zigbeeLockUntil = 0;
+  z154Clear.val = false;
+  z154Sample.val = "";
+  showToast("Auto-Scanning Zigbee Ch 11–26...");
+  fetch("/cmd?z_auto=1", { method: "POST" })
+    .catch(() => {});
+  setTimeout(() => { zigbeeAutoScanning = false; }, 6500);
 }
 
 function jamZigbeeChannel() {
@@ -481,9 +476,13 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
     chan     = probeId === 0 ? "UART Glitch" : (probeId === 2 ? "I²C ACK-Kill" : (probeId === 3 ? "I²C Stretch" : (probeId === 4 ? "Wi-Fi Jam" : `Zigbee Jam Ch ${probeId}`)));
     isFault  = true;
     let desc = probeId === 0 ? "10 us UART bit-flip injected across R1 220 Ohm"
+             : probeId === 2 ? "50 us I²C 9th-clock ACK-kill on SDA — Daphne ran 9-clock recovery"
              : probeId === 3 ? "50 us I²C SCL clock-stretch held bus low"
              : probeId === 4 ? "Targeted Wi-Fi jam sent to Iris — Iris hopped channels"
              : `Targeted 802.15.4 jam sent on Ch ${probeId} — Iris hopped channels`;
+    if (probeId === 0) lastUartGlitch.val = "Bit-flip injected -> Daphne checksum mismatch & GP18 alarm";
+    if (probeId === 2) lastI2cFault.val = "Kill ACK -> 50 us NACK on 9th clock -> Daphne 9-clock recovery restored GY-511";
+    if (probeId === 3) lastI2cFault.val = "Stretch Clock -> 50 us SCL hold -> Daphne paused cleanly and resumed GY-511";
     summary = desc;
     details = {
       Action: chan,
@@ -955,13 +954,28 @@ function AutoPanel() {
     CtfVaultSection()
   );
 }
+function ProtocolObjectiveStrip(bit, interceptAction, faultAction) {
+  let hasI = (ctfImask.val & (1 << bit)) !== 0;
+  let hasE = (ctfEmask.val & (1 << bit)) !== 0;
+  return div({ class: () => "flag-box " + (ctfBonus.val ? "bonus" : (hasI && hasE ? "captured" : "")) },
+    span({ class: "panel-meta" }, () => ctfBonus.val ? "BONUS SECRET" : "Protocol Objective"),
+    span({ class: "mono", style: "font-size:12px;font-weight:700" }, () => {
+      if (ctfBonus.val) return ctfBonus.val;
+      let s1 = hasI ? "Intercept: Done" : `Intercept: ${interceptAction}`;
+      let s2 = hasE ? "Fault: Done" : `Fault: ${faultAction}`;
+      return `${s1} · ${s2}`;
+    })
+  );
+}
 
 function UartPanel() {
   const bauds = [9600, 38400, 57600, 115200];
   return () => {
-    let isCorrupt = activeGlitchBus.val === "UART" || (selectedPacket.val && selectedPacket.val.proto === "UART" && selectedPacket.val.isFault);
+    let isCorrupt = Boolean(lastUartGlitch.val) || activeGlitchBus.val === "UART" || (selectedPacket.val && selectedPacket.val.proto === "UART" && selectedPacket.val.isFault);
     let sentStr = latestUartSent.val || (uartClear.val ? uartSample.val : "Waiting for matching baud rate...");
-    let recvStr = latestUartRecv.val || uartSample.val || "No UART frames captured yet";
+    let recvStr = lastUartGlitch.val
+      ? `${lastUartGlitch.val}${latestUartRecv.val ? ` (Sniffer saw pre-R1 frame: ${latestUartRecv.val})` : ""}`
+      : (latestUartRecv.val || uartSample.val || "No UART frames captured yet");
 
     return div({ class: "inspector-body" },
       div({ class: "panel-section" },
@@ -993,7 +1007,10 @@ function UartPanel() {
             class: "cmd-btn glitch",
             disabled: safetyState.val === "Stopped",
             ...tipHandlers("Inject a bounded 10 us LOW pulse on Probe 0 to corrupt Hestia's UART checksum"),
-            onclick: () => triggerHardwareCommand("U", "Injected 10 us UART bit-flip glitch", "UART")
+            onclick: () => {
+              lastUartGlitch.val = "Bit-flip injected -> Daphne checksum mismatch & GP18 alarm";
+              triggerHardwareCommand("U", "Injected 10 us UART bit-flip glitch", "UART");
+            }
           }, ICONS.zap(), "UART Glitch")
         ),
         div({ class: "before-after-flow" },
@@ -1010,7 +1027,8 @@ function UartPanel() {
             span({ class: "ba-val" }, recvStr)
           )
         )
-      )
+      ),
+      ProtocolObjectiveStrip(0, "Run Auto-Detect", "Click UART Glitch")
     );
   };
 }
@@ -1018,6 +1036,8 @@ function UartPanel() {
 function I2cPanel() {
   return () => {
     let isGlitch = activeGlitchBus.val === "I2C_ACK" || activeGlitchBus.val === "I2C_STRETCH";
+    let hasI = (ctfImask.val & 2) !== 0;
+    let hasE = (ctfEmask.val & 2) !== 0;
     let ax = accelX.val, ay = accelY.val, az = accelZ.val;
     return div({ class: "inspector-body" },
       div({ class: "panel-section" },
@@ -1052,16 +1072,27 @@ function I2cPanel() {
             class: "cmd-btn glitch",
             disabled: safetyState.val === "Stopped",
             ...tipHandlers("Pull SDA high during 9th ACK clock for 50 us to trigger Daphne 9-clock recovery"),
-            onclick: () => triggerHardwareCommand("A", "Injected 50 us I²C ACK-Kill", "I2C_ACK")
+            onclick: () => {
+              lastI2cFault.val = "Kill ACK -> 50 us NACK on 9th clock -> Daphne 9-clock recovery restored GY-511";
+              triggerHardwareCommand("A", "Injected 50 us I²C ACK-Kill", "I2C_ACK");
+            }
           }, ICONS.zap(), "Kill ACK"),
           button({
             class: "cmd-btn warn",
             disabled: safetyState.val === "Stopped",
             ...tipHandlers("Hold SCL low for 50 us to test Daphne clock-stretch tolerance"),
-            onclick: () => triggerHardwareCommand("S", "Injected 50 us I²C Clock Stretch", "I2C_STRETCH")
+            onclick: () => {
+              lastI2cFault.val = "Stretch Clock -> 50 us SCL hold -> Daphne paused cleanly and resumed GY-511";
+              triggerHardwareCommand("S", "Injected 50 us I²C Clock Stretch", "I2C_STRETCH");
+            }
           }, ICONS.cpu(), "Stretch Clock")
+        ),
+        div({ class: () => "flag-box " + ((hasI && hasE) ? "captured" : "") },
+          span({ class: "panel-meta" }, "Bus Recovery & Status"),
+          span({ class: "flag-value" }, () => lastI2cFault.val || (hasI ? "GY-511 bus sniffed — click Kill ACK or Stretch Clock" : "Sniffing Probes 2 & 3 on 400 kHz I²C bus..."))
         )
-      )
+      ),
+      ProtocolObjectiveStrip(1, "Sniff 3+ I²C frames", "Click Kill ACK or Stretch Clock")
     );
   };
 }
@@ -1089,7 +1120,7 @@ function WifiPanel() {
         button({
           class: "cmd-btn",
           disabled: safetyState.val === "Stopped",
-          ...tipHandlers("Sweep Ch 1–13 automatically until Iris cleartext is captured"),
+          ...tipHandlers("Sweep Ch 1–13 in hardware until Iris cleartext is captured"),
           onclick: triggerWifiAutoScan
         }, ICONS.radar(), "Auto-Scan"),
         button({
@@ -1099,7 +1130,8 @@ function WifiPanel() {
           onclick: () => jamWifiChannel(wifiChannelMode.val)
         }, ICONS.wifi(), () => wifiChannelMode.val >= 1 ? `Jam Wi-Fi Ch ${wifiChannelMode.val}` : "Jam Wi-Fi")
       )
-    )
+    ),
+    ProtocolObjectiveStrip(2, "Find true Ch 1–13", "Click Jam Wi-Fi")
   );
 }
 
@@ -1126,7 +1158,7 @@ function ZigbeePanel() {
         button({
           class: "cmd-btn",
           disabled: safetyState.val === "Stopped",
-          ...tipHandlers("Sweep Ch 11–26 automatically until Iris cleartext is captured"),
+          ...tipHandlers("Sweep Ch 11–26 in hardware until Iris cleartext is captured"),
           onclick: triggerZigbeeAutoScan
         }, ICONS.radar(), "Auto-Scan"),
         button({
@@ -1136,7 +1168,8 @@ function ZigbeePanel() {
           onclick: jamZigbeeChannel
         }, ICONS.radio(), () => zigbeeChannel.val >= 11 ? `Jam Zigbee Ch ${zigbeeChannel.val}` : "Jam Zigbee")
       )
-    )
+    ),
+    ProtocolObjectiveStrip(3, "Find true Ch 11–26", "Click Jam Zigbee")
   );
 }
 function ContextualInspectorPane() {
@@ -1176,12 +1209,12 @@ function BottomWiresharkPane() {
         class: () => "cmd-btn" + (faultsOnly.val ? " glitch" : ""),
         ...tipHandlers("Show only fault injection events and corrupted checksums"),
         onclick: () => { faultsOnly.val = !faultsOnly.val; }
-      }, ICONS.filter(), () => faultsOnly.val ? "Faults Only: ON" : "Faults Only"),
+      }, ICONS.filter(), "Faults Only"),
       button({
         class: () => "hurry-toggle" + (hideRepeatingNormal.val ? "" : " off"),
         ...tipHandlers("Collapses consecutive normal polling frames so faults and new protocol events stay visible."),
         onclick: () => { hideRepeatingNormal.val = !hideRepeatingNormal.val; }
-      }, () => hideRepeatingNormal.val ? "Hide Repeating Normal Packets: ON" : "Hide Repeating Normal Packets"),
+      }, "Hide Repeating Normal"),
       input({
         class: "ws-input",
         type: "text",
@@ -1296,10 +1329,10 @@ function BottomWiresharkPane() {
             div({ class: "pkt-detail-hdr" },
               span({ class: "mono", style: "font-weight:700" }, p ? `Packet #${p.id} · ${p.proto} · ${p.len} B` : "No packet selected"),
               button({
-                class: "cmd-btn",
+                class: "cmd-btn pkt-toggle-btn",
                 disabled: !p,
                 onclick: () => { showRawHex.val = !showRawHex.val; }
-              }, ICONS.code(), showRawHex.val ? "Show Plain-English Summary" : "View Raw Hex Bytes")
+              }, ICONS.code(), showRawHex.val ? "Plain Summary" : "View Raw Hex")
             ),
             !p
               ? div({ class: "plain-summary-card" }, span({ style: "color:var(--fg-muted)" }, "Click any row in the packet table to read a plain-English summary or inspect raw bytes."))
@@ -1384,10 +1417,22 @@ function updateFromTelemetry(d) {
   if (d.zigbee_ch != null && nowMs >= zigbeeLockUntil) zigbeeChannel.val = d.zigbee_ch;
   if (d.uart_clear != null) uartClear.val = d.uart_clear;
   if (d.uart_sample != null) uartSample.val = d.uart_sample;
-  if (d.wifi_clear != null) wifiClear.val = d.wifi_clear;
+  if (d.wifi_clear != null) {
+    if (wifiAutoScanning && d.wifi_clear) {
+      wifiAutoScanning = false;
+      showToast(`Locked Iris Wi-Fi on Ch ${d.wifi_sample_ch || wifiChannelMode.val}`);
+    }
+    wifiClear.val = d.wifi_clear;
+  }
   if (d.wifi_sample_ch != null) wifiSampleCh.val = d.wifi_sample_ch;
   if (d.wifi_sample != null) wifiSample.val = d.wifi_sample;
-  if (d.z154_clear != null) z154Clear.val = d.z154_clear;
+  if (d.z154_clear != null) {
+    if (zigbeeAutoScanning && d.z154_clear) {
+      zigbeeAutoScanning = false;
+      showToast(`Locked Iris Zigbee on Ch ${d.zigbee_ch || zigbeeChannel.val}`);
+    }
+    z154Clear.val = d.z154_clear;
+  }
   if (d.z154_sample != null) z154Sample.val = d.z154_sample;
   if (d.pcap_bytes != null) pcapSize.val = d.pcap_bytes;
   if (d.iris_rssi != null) irisRssi.val = d.iris_rssi;

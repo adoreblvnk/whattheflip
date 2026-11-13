@@ -162,6 +162,9 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
                 wtf_sniffer_request_wifi_burst((uint8_t)ch);
             }
         }
+        if (httpd_query_key_value(query, "wifi_auto", val, sizeof(val)) == ESP_OK) {
+            wtf_sniffer_request_wifi_autoscan();
+        }
         if (httpd_query_key_value(query, "wifi_jam", val, sizeof(val)) == ESP_OK) {
             int ch = atoi(val);
             if (ch >= 1 && ch <= 13) {
@@ -196,6 +199,9 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
             if (zch >= 11 && zch <= 26) {
                 wtf_sniffer_set_154_channel((uint8_t)zch);
             }
+        }
+        if (httpd_query_key_value(query, "z_auto", val, sizeof(val)) == ESP_OK) {
+            wtf_sniffer_request_154_autoscan();
         }
     }
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");

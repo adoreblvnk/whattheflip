@@ -36,7 +36,7 @@
 #define IRIS_154_FLAG           "WTF{i_carry_your_messages_not_your_sins}"
 
 /* Dynamic Cat-and-Mouse RF State */
-static volatile uint32_t s_tx_period_ms    = 180;
+static volatile uint32_t s_tx_period_ms    = 60;
 static volatile uint8_t  s_true_wifi_ch    = 6;
 static volatile uint8_t  s_true_154_ch     = 15;
 static volatile uint32_t s_ota_cmd_count   = 0;
@@ -321,7 +321,7 @@ static esp_err_t iris_send_154_frame(uint8_t ch, bool is_true_ch, uint8_t seq)
     s_154_tx_done = false;
     esp_err_t err = esp_ieee802154_transmit(frame_buf, false);
     if (err == ESP_OK) {
-        for (int w = 0; w < 10 && !s_154_tx_done; w++) {
+        for (int w = 0; w < 3 && !s_154_tx_done; w++) {
             tk_dly_tsk(1);
         }
     }
@@ -380,18 +380,19 @@ static void task_iris_transmitter(INT stacd, void *exinf)
                 (void)iris_send_wifi_frame(wch, false, seq);
             }
         }
+        (void)iris_send_wifi_frame(s_true_wifi_ch, true, seq);
         (void)esp_wifi_set_channel(s_true_wifi_ch, WIFI_SECOND_CHAN_NONE);
 
-        /* 2. 802.15.4 Phase: transmit cleartext on s_true_154_ch, then sweep 15 decoys */
+        /* 2. 802.15.4 Phase: transmit cleartext twice on s_true_154_ch + decoys */
         last_154_err = iris_send_154_frame(s_true_154_ch, true, (uint8_t)seq);
         for (uint8_t zch = 11U; zch <= 26U; zch++) {
             if (zch != s_true_154_ch) {
                 (void)iris_send_154_frame(zch, false, (uint8_t)seq);
             }
         }
+        (void)iris_send_154_frame(s_true_154_ch, true, (uint8_t)seq);
         (void)esp_ieee802154_set_channel(s_true_154_ch);
         (void)esp_ieee802154_receive();
-
         if ((seq % 10U) == 1U) {
             tm_printf((UB *)"[IRIS:RF] Seq #%lu | WiFi_Ch=%u (err=%d, cb=%lu) | 802154_Ch=%u (err=%d)\n",
                       (unsigned long)seq, (unsigned)s_true_wifi_ch, (int)last_wifi_err,

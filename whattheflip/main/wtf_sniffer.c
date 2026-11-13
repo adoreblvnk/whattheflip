@@ -61,8 +61,9 @@ static volatile uint8_t  s_wifi_burst_ch         = SOFTAP_HOME_CHANNEL;
 static volatile bool     s_wifi_burst_pending    = false;
 static volatile bool     s_wifi_burst_active     = false;
 static volatile bool     s_wifi_burst_got_iris   = false;
+static volatile bool     s_wifi_autoscan_req     = false;
+static volatile bool     s_154_autoscan_req      = false;
 static volatile int64_t  s_last_http_activity_us = 0;
-
 static volatile bool     s_wifi_last_clear       = false;
 static volatile uint8_t  s_wifi_sample_ch        = 0U;
 static char              s_wifi_last_sample[72]  = "";
@@ -186,6 +187,12 @@ EXPORT uint8_t wtf_sniffer_get_154_channel(void)
 {
     return s_154_channel;
 }
+EXPORT void wtf_sniffer_request_154_autoscan(void)
+{
+    s_154_last_clear = false;
+    s_154_last_sample[0] = '\0';
+    s_154_autoscan_req = true;
+}
 
 EXPORT void wtf_sniffer_set_uart_baud(uint32_t baud)
 {
@@ -224,6 +231,8 @@ EXPORT void wtf_sniffer_clear_stats(void)
     s_154_last_clear     = false;
     s_154_channel        = 0U;
     s_154_last_sample[0] = '\0';
+    s_wifi_autoscan_req  = false;
+    s_154_autoscan_req   = false;
     s_ctf_uart_flag[0]   = '\0';
     s_ctf_wifi_flag[0]   = '\0';
     s_ctf_154_flag[0]    = '\0';
@@ -468,6 +477,12 @@ EXPORT void wtf_sniffer_request_wifi_burst(uint8_t channel)
     s_wifi_burst_pending  = true;
     tm_printf((UB *)"[SNIFFER:WIFI] Queued fast off-channel capture burst on Ch %u\n", (unsigned)channel);
 }
+EXPORT void wtf_sniffer_request_wifi_autoscan(void)
+{
+    s_wifi_last_clear = false;
+    s_wifi_last_sample[0] = '\0';
+    s_wifi_autoscan_req = true;
+}
 EXPORT uint8_t wtf_sniffer_get_wifi_channel(void)
 {
     return s_wifi_channel_mode;
@@ -577,7 +592,9 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     if (buf == NULL || !sniffer_mode_allows(PROTO_WIFI)) {
         return;
     }
-
+    if (wtf_discovery_get_tool_mode() == WTF_TOOL_MODE_WIFI && !s_wifi_burst_active) {
+        return;
+    }
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
     uint16_t len = pkt->rx_ctrl.sig_len;
     if (len == 0) {
@@ -669,9 +686,8 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     wtf_record_t rec;
     rec.timestamp_us = (uint32_t)now_us;
     rec.protocol = PROTO_WIFI;
-    rec.probe_id = (uint8_t)pkt->rx_ctrl.channel;
+    rec.probe_id = s_wifi_burst_active ? s_wifi_burst_ch : (uint8_t)pkt->rx_ctrl.channel;
     rec.length = (uint16_t)copy_len;
-    memcpy(rec.data, pkt->payload, copy_len);
 
     if (g_mbf_storage > 0) {
         (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
@@ -915,7 +931,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             if (ch != SOFTAP_HOME_CHANNEL) {
                 (void)esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
             }
-            for (int w = 0; w < 28 && !s_wifi_burst_got_iris && !wtf_safety_is_aborted(); w++) {
+            for (int w = 0; w < 35 && !s_wifi_last_clear && !wtf_safety_is_aborted(); w++) {
                 tk_dly_tsk(10);
             }
             s_wifi_burst_active = false;
@@ -925,6 +941,53 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             }
             if (wtf_discovery_get_tool_mode() != WTF_TOOL_MODE_WIFI) {
                 (void)esp_ieee802154_receive();
+            }
+        }
+        /* 4. Firmware-Driven Wi-Fi Auto-Scan (Ch 1..13) — stops immediately on cleartext lock */
+        if (s_wifi_autoscan_req && !wtf_safety_is_aborted()) {
+            s_wifi_autoscan_req = false;
+            (void)esp_ieee802154_sleep();
+            for (uint8_t ch = 1U; ch <= 13U && !wtf_safety_is_aborted() &&
+                 wtf_discovery_get_tool_mode() == WTF_TOOL_MODE_WIFI; ch++) {
+                s_wifi_channel_mode = ch;
+                s_wifi_burst_ch     = ch;
+                s_wifi_sample_ch    = ch;
+                s_wifi_last_clear   = false;
+                s_wifi_last_sample[0] = '\0';
+                s_wifi_burst_got_iris = false;
+                s_wifi_burst_active = true;
+                s_current_sniffer_ch = ch;
+                if (ch != SOFTAP_HOME_CHANNEL) {
+                    (void)esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+                }
+                for (int w = 0; w < 32 && !s_wifi_last_clear && !wtf_safety_is_aborted(); w++) {
+                    tk_dly_tsk(10);
+                }
+                s_wifi_burst_active = false;
+                s_current_sniffer_ch = SOFTAP_HOME_CHANNEL;
+                if (ch != SOFTAP_HOME_CHANNEL) {
+                    (void)esp_wifi_set_channel(SOFTAP_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                }
+                if (s_wifi_last_clear) {
+                    tm_printf((UB *)"[SNIFFER:WIFI] AUTO-SCAN LOCKED: Ch %u\n", (unsigned)ch);
+                    break;
+                }
+                tk_dly_tsk(30);
+            }
+        }
+        /* 5. Firmware-Driven Zigbee Auto-Scan (Ch 11..26) — stops immediately on cleartext lock */
+        if (s_154_autoscan_req && !wtf_safety_is_aborted()) {
+            s_154_autoscan_req = false;
+            for (uint8_t ch = 11U; ch <= 26U && !wtf_safety_is_aborted() &&
+                 wtf_discovery_get_tool_mode() == WTF_TOOL_MODE_ZIGBEE; ch++) {
+                wtf_sniffer_set_154_channel(ch);
+                for (int w = 0; w < 32 && !s_154_last_clear && !wtf_safety_is_aborted(); w++) {
+                    tk_dly_tsk(10);
+                }
+                if (s_154_last_clear) {
+                    tm_printf((UB *)"[SNIFFER:802154] AUTO-SCAN LOCKED: Ch %u\n", (unsigned)ch);
+                    break;
+                }
             }
         }
         /* Keep 802.15.4 sleeping while in dedicated WIFI mode so Wi-Fi promiscuous RX has full RF access */

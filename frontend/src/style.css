@@ -234,6 +234,10 @@ input:focus-visible {
   color: var(--state-glitch);
   background: var(--state-glitch-bg);
 }
+.pkt-toggle-btn {
+  min-width: 142px;
+  justify-content: center;
+}
 .cmd-btn.glitch:hover:not(:disabled) {
   background: rgba(190, 18, 60, 0.15);
 }

@@ -390,6 +390,10 @@ class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
                 state["wifi_clear"] = False
                 state["wifi_sample"] = ""
                 wtf_write_serial(f"CH{ch}\n")
+            if "wifi_auto" in parts:
+                state["wifi_clear"] = False
+                state["wifi_sample"] = ""
+                wtf_write_serial("WIFI:AUTO\n")
             if "wifi_jam" in parts:
                 ch = int(parts["wifi_jam"])
                 state["wifi_clear"] = False
@@ -401,6 +405,10 @@ class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
                 state["z154_clear"] = False
                 state["z154_sample"] = ""
                 wtf_write_serial(f"ZCH{zch}\n")
+            if "z_auto" in parts:
+                state["z154_clear"] = False
+                state["z154_sample"] = ""
+                wtf_write_serial("ZIGBEE:AUTO\n")
 
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
