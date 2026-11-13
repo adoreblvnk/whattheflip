@@ -349,18 +349,35 @@ static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
             }
         }
         s_i2c_in_frame = false;
+        s_i2c_bit_idx = 0U;
+        s_i2c_curr_byte = 0U;
     }
 }
 
 /* IRAM ISR on Probe 3 (SCL, GPIO7) Rising Edge: Shifts 8 data bits + 9th ACK/NACK bit */
+static volatile uint8_t s_i2c_orphan_clks = 0U;
 static void IRAM_ATTR i2c_scl_posedge_isr(void *arg)
 {
     (void)arg;
+    uint32_t sda = (GPIO.in.val >> WTF_PIN_PROBE2_SDA) & 1U;
     if (!s_i2c_in_frame) {
+        if (s_i2c_orphan_clks < 8U) {
+            s_i2c_curr_byte = (uint8_t)((s_i2c_curr_byte << 1U) | (uint8_t)sda);
+            s_i2c_orphan_clks++;
+        } else {
+            uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
+            if (next_head != s_i2c_ring_tail) {
+                s_i2c_ring[s_i2c_ring_head].timestamp_us = (uint32_t)esp_timer_get_time();
+                s_i2c_ring[s_i2c_ring_head].length = 1U;
+                s_i2c_ring[s_i2c_ring_head].bytes[0] = s_i2c_curr_byte;
+                s_i2c_ring_head = next_head;
+            }
+            s_i2c_curr_byte = 0U;
+            s_i2c_orphan_clks = 0U;
+        }
         return;
     }
-
-    uint32_t sda = (GPIO.in.val >> WTF_PIN_PROBE2_SDA) & 1U;
+    s_i2c_orphan_clks = 0U;
     if (s_i2c_bit_idx < 8U) {
         s_i2c_curr_byte = (uint8_t)((s_i2c_curr_byte << 1U) | (uint8_t)sda);
         s_i2c_bit_idx++;
