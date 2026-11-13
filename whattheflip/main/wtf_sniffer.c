@@ -399,7 +399,8 @@ static void sniffer_hw_i2c_init(void)
     (void)wtf_discovery_remap_probe(WTF_PIN_PROBE2_SDA, WTF_DECODER_I2C0_EXT);
     (void)wtf_discovery_remap_probe(WTF_PIN_PROBE3_SCL, WTF_DECODER_I2C0_EXT);
 
-    /* Attach IRAM hardware ISRs to capture full bidirectional Master <-> Slave frames */
+    /* Ensure GPIO ISR service is installed before attaching IRAM I2C ISRs (safe if already installed) */
+    (void)gpio_install_isr_service(0);
     (void)gpio_isr_handler_add(WTF_PIN_PROBE2_SDA, i2c_sda_edge_isr, NULL);
     (void)gpio_isr_handler_add(WTF_PIN_PROBE3_SCL, i2c_scl_posedge_isr, NULL);
     (void)gpio_set_intr_type(WTF_PIN_PROBE2_SDA, GPIO_INTR_ANYEDGE);
