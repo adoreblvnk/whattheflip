@@ -311,7 +311,11 @@ static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
     uint32_t sda = (gpio_in >> WTF_PIN_PROBE2_SDA) & 1U;
     if (sda == 0U) {
         /* START or Repeated START condition (SDA falling while SCL HIGH) */
-        if (s_i2c_in_frame && s_i2c_byte_cnt > 0U) {
+        if (s_i2c_in_frame && (s_i2c_byte_cnt > 0U || s_i2c_bit_idx >= 4U)) {
+            if (s_i2c_byte_cnt == 0U) {
+                s_i2c_work_buf[0] = s_i2c_curr_byte;
+                s_i2c_byte_cnt = 1U;
+            }
             uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
             if (next_head != s_i2c_ring_tail) {
                 s_i2c_ring[s_i2c_ring_head].timestamp_us = s_i2c_start_us;
@@ -329,7 +333,11 @@ static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
         s_i2c_start_us  = (uint32_t)esp_timer_get_time();
     } else {
         /* STOP condition (SDA rising while SCL HIGH) */
-        if (s_i2c_in_frame && s_i2c_byte_cnt > 0U) {
+        if (s_i2c_in_frame && (s_i2c_byte_cnt > 0U || s_i2c_bit_idx >= 4U)) {
+            if (s_i2c_byte_cnt == 0U) {
+                s_i2c_work_buf[0] = s_i2c_curr_byte;
+                s_i2c_byte_cnt = 1U;
+            }
             uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
             if (next_head != s_i2c_ring_tail) {
                 s_i2c_ring[s_i2c_ring_head].timestamp_us = s_i2c_start_us;
