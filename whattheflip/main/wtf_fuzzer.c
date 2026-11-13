@@ -60,7 +60,8 @@ EXPORT void inject_uart_bit_flip_10us(void)
     esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE0_GLITCH, U1TXD_OUT_IDX, false, false);
     UART1.fifo.rxfifo_rd_byte = 0xFFU;
     esp_rom_delay_us(10); /* 1 bit cell at 115200 baud (8.68 µs) */
-    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE0_GLITCH, SIG_GPIO_OUT_IDX, false, true);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE0_GLITCH, SIG_GPIO_OUT_IDX, false, false);
+    GPIO.func_out_sel_cfg[WTF_PIN_PROBE0_GLITCH].oen_sel = 1U;
     GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH);
 }
 
@@ -80,8 +81,8 @@ EXPORT void inject_i2c_ack_kill_50us(void)
     esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE2_SDA, I2CEXT0_SDA_OUT_IDX, false, false);
 
     esp_rom_delay_us(50); /* Bounded 50 µs ACK-kill window */
-
-    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE2_SDA, SIG_GPIO_OUT_IDX, false, true);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE2_SDA, SIG_GPIO_OUT_IDX, false, false);
+    GPIO.func_out_sel_cfg[WTF_PIN_PROBE2_SDA].oen_sel = 1U;
     GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE2_SDA);
     I2C0.ctr.sda_force_out = 0U;
     I2C0.ctr.conf_upgate = 1U;
@@ -103,8 +104,8 @@ EXPORT void inject_i2c_clock_stretch_50us(void)
     esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE3_SCL, I2CEXT0_SCL_OUT_IDX, false, false);
 
     esp_rom_delay_us(50); /* Bounded 50 µs hardware clock-stretch */
-
-    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE3_SCL, SIG_GPIO_OUT_IDX, false, true);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE3_SCL, SIG_GPIO_OUT_IDX, false, false);
+    GPIO.func_out_sel_cfg[WTF_PIN_PROBE3_SCL].oen_sel = 1U;
     GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE3_SCL);
     I2C0.scl_sp_conf.scl_pd_en = 0U;
     I2C0.ctr.scl_force_out = 0U;
@@ -143,13 +144,15 @@ EXPORT void inject_wireless_target_jam_50us(void)
 EXPORT void wtf_fuzzer_cancel(void)
 {
     s_fuzzer_cancelled = true;
-    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE0_GLITCH, SIG_GPIO_OUT_IDX, false, true);
-    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE2_SDA, SIG_GPIO_OUT_IDX, false, true);
-    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE3_SCL, SIG_GPIO_OUT_IDX, false, true);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE0_GLITCH, SIG_GPIO_OUT_IDX, false, false);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE2_SDA, SIG_GPIO_OUT_IDX, false, false);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE3_SCL, SIG_GPIO_OUT_IDX, false, false);
+    GPIO.func_out_sel_cfg[WTF_PIN_PROBE0_GLITCH].oen_sel = 1U;
+    GPIO.func_out_sel_cfg[WTF_PIN_PROBE2_SDA].oen_sel    = 1U;
+    GPIO.func_out_sel_cfg[WTF_PIN_PROBE3_SCL].oen_sel    = 1U;
     GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
                            (1UL << WTF_PIN_PROBE2_SDA)    |
                            (1UL << WTF_PIN_PROBE3_SCL);
-    I2C0.ctr.sda_force_out = 0U;
     I2C0.ctr.scl_force_out = 0U;
     I2C0.scl_sp_conf.scl_pd_en = 0U;
     I2C0.ctr.conf_upgate = 1U;
