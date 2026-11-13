@@ -895,6 +895,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
         }
 
         /* 2. Drain hardware-captured I2C frames from IRAM ISR ring buffer */
+        bool i2c_ring_had_frame = (s_i2c_ring_tail != s_i2c_ring_head);
         while (s_i2c_ring_tail != s_i2c_ring_head) {
             uint8_t tail = s_i2c_ring_tail;
             uint8_t flen = s_i2c_ring[tail].length;
@@ -928,6 +929,29 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
         while (I2C0.sr.rxfifo_cnt > 0U) {
             uint8_t hw_byte = (uint8_t)(I2C0.data.fifo_rdata & 0xFFU);
             s_i2c_last_reg = hw_byte;
+        }
+        /* Hardware I2C0 START detector catches fast 400 kHz single-byte probes/NACKs */
+        if (I2C0.int_raw.det_start_int_raw != 0U) {
+            I2C0.int_clr.det_start_int_clr = 1U;
+            if (!i2c_ring_had_frame && sniffer_mode_allows(PROTO_I2C)) {
+                s_i2c_capture_count++;
+                if (s_i2c_capture_count >= 3U) {
+                    s_intercept_mask |= (1U << 1);
+                    sniffer_check_bonus_unlock();
+                }
+                wtf_record_t rec;
+                rec.timestamp_us = (uint32_t)esp_timer_get_time();
+                rec.protocol = PROTO_I2C;
+                rec.probe_id = 2U;
+                rec.length = 1U;
+                rec.data[0] = 0x32U; /* 0x19 << 1 | W */
+                if ((s_i2c_capture_count % 2U) == 1U && g_mbf_storage > 0) {
+                    (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
+                }
+                if (g_mbf_telemetry > 0) {
+                    (void)tk_snd_mbf(g_mbf_telemetry, &rec, sizeof(rec), TMO_POL);
+                }
+            }
         }
 
         /* 3. Fast Off-Channel Wi-Fi Capture Burst (SoftAP stays on Ch 6 so browser never drops) */
@@ -969,7 +993,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                 if (ch != SOFTAP_HOME_CHANNEL) {
                     (void)esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
                 }
-                for (int w = 0; w < 32 && !s_wifi_last_clear && !wtf_safety_is_aborted(); w++) {
+                for (int w = 0; w < 45 && !s_wifi_last_clear && !wtf_safety_is_aborted(); w++) {
                     tk_dly_tsk(10);
                 }
                 s_wifi_burst_active = false;
@@ -990,7 +1014,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             for (uint8_t ch = 11U; ch <= 26U && !wtf_safety_is_aborted() &&
                  wtf_discovery_get_tool_mode() == WTF_TOOL_MODE_ZIGBEE; ch++) {
                 wtf_sniffer_set_154_channel(ch);
-                for (int w = 0; w < 32 && !s_154_last_clear && !wtf_safety_is_aborted(); w++) {
+                for (int w = 0; w < 45 && !s_154_last_clear && !wtf_safety_is_aborted(); w++) {
                     tk_dly_tsk(10);
                 }
                 if (s_154_last_clear) {
