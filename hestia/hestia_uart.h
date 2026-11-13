@@ -34,6 +34,12 @@
 #define HESTIA_DEFAULT_RATE_HZ      HESTIA_RATE_2HZ
 #endif
 
+/* Supported Dynamic Baud Rates for Baud-Rate Hunting */
+#define HESTIA_BAUD_9600            9600U
+#define HESTIA_BAUD_38400           38400U
+#define HESTIA_BAUD_57600           57600U
+#define HESTIA_BAUD_115200          115200U
+
 /* Operating Modes */
 #ifndef WTF_PACKET_TYPES_H
 typedef enum {
@@ -65,5 +71,9 @@ EXPORT uint32_t hestia_uart_get_rate(void);
 /* Test Mode Configuration API */
 EXPORT ER hestia_uart_set_mode(uint8_t mode);
 EXPORT uint8_t hestia_uart_get_mode(void);
+
+/* Baud Rate Configuration API */
+EXPORT ER hestia_uart_set_baud(uint32_t baud);
+EXPORT uint32_t hestia_uart_get_baud(void);
 
 #endif /* HESTIA_UART_H */

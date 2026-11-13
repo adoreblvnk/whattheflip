@@ -22,7 +22,7 @@
 
 static bool s_restart_on_next = false;
 static i2c_hw_t *s_active_i2c = i2c0_hw;
-
+static uint32_t s_last_abrt_source = 0U;
 uint32_t daphne_hw_scan_all_pins_raw(void)
 {
     /* Configure GP2..GP28 as SIO inputs with NO pullup and NO pulldown */
@@ -136,6 +136,7 @@ int daphne_hw_i2c_write(uint8_t addr, const uint8_t *src, int len, bool nostop)
         while (!(s_active_i2c->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_EMPTY_BITS) && --timeout > 0) {}
 
         if (s_active_i2c->tx_abrt_source) {
+            s_last_abrt_source = s_active_i2c->tx_abrt_source;
             (void)s_active_i2c->clr_tx_abrt;
             abort = true;
         }
@@ -149,7 +150,7 @@ int daphne_hw_i2c_write(uint8_t addr, const uint8_t *src, int len, bool nostop)
         if (abort) break;
     }
 
-    s_restart_on_next = nostop;
+    s_restart_on_next = abort ? false : nostop;
     return abort ? -1 : len;
 }
 
@@ -176,6 +177,7 @@ int daphne_hw_i2c_read(uint8_t addr, uint8_t *dst, int len, bool nostop)
         int timeout = 50000;
         do {
             if (s_active_i2c->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_ABRT_BITS) {
+                s_last_abrt_source = s_active_i2c->tx_abrt_source;
                 abort = true;
                 (void)s_active_i2c->clr_tx_abrt;
             }
@@ -195,15 +197,14 @@ int daphne_hw_i2c_read(uint8_t addr, uint8_t *dst, int len, bool nostop)
         (void)s_active_i2c->clr_stop_det;
     }
 
-    s_restart_on_next = nostop;
+    s_restart_on_next = abort ? false : nostop;
     return abort ? -1 : len;
 }
 
 uint32_t daphne_hw_i2c_get_abrt_source(void)
 {
-    return s_active_i2c->tx_abrt_source;
+    return s_last_abrt_source ? s_last_abrt_source : s_active_i2c->tx_abrt_source;
 }
-
 void daphne_hw_i2c_bus_recovery(uint8_t bus_num)
 {
     int sda_pin = (bus_num == 1) ? 6 : 4;
@@ -252,6 +253,72 @@ void daphne_hw_i2c_bus_recovery(uint8_t bus_num)
     #undef I2C_REC_DELAY
 
     /* 5. Re-initialize hardware I2C controller at 400 kHz Fast-Mode */
+    daphne_hw_i2c_init(bus_num, 400000);
+}
+void daphne_hw_i2c_bitbang_frame(uint8_t bus_num, uint8_t addr7, const uint8_t *data, int len)
+{
+    if (data == (void *)0 || len <= 0) {
+        return;
+    }
+
+    int sda_pin = (bus_num == 1) ? 6 : 4;
+    int scl_pin = (bus_num == 1) ? 7 : 5;
+
+    s_active_i2c->enable = 0;
+
+    pads_bank0_hw->io[sda_pin] = PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_PUE_BITS;
+    pads_bank0_hw->io[scl_pin] = PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_PUE_BITS;
+    io_bank0_hw->io[sda_pin].ctrl = 5; /* GPIO_FUNC_SIO */
+    io_bank0_hw->io[scl_pin].ctrl = 5; /* GPIO_FUNC_SIO */
+
+    sio_hw->gpio_oe_clr = (1U << sda_pin) | (1U << scl_pin);
+    sio_hw->gpio_clr = (1U << sda_pin) | (1U << scl_pin);
+
+    /* ~100 kHz open-drain bitbang so whattheflip IRAM ISR captures every bit cleanly */
+    #define BB_DELAY() do { for (volatile int _d = 0; _d < 220; _d++) {} } while (0)
+    #define BB_SDA(h) do { if (h) sio_hw->gpio_oe_clr = (1U << sda_pin); else sio_hw->gpio_oe_set = (1U << sda_pin); } while (0)
+    #define BB_SCL(h) do { if (h) sio_hw->gpio_oe_clr = (1U << scl_pin); else sio_hw->gpio_oe_set = (1U << scl_pin); } while (0)
+
+    /* START */
+    BB_SDA(1); BB_SCL(1); BB_DELAY();
+    BB_SDA(0); BB_DELAY();
+    BB_SCL(0); BB_DELAY();
+
+    uint8_t addr_w = (uint8_t)((addr7 << 1) & 0xFEU);
+    for (int b = 7; b >= 0; b--) {
+        BB_SDA((addr_w >> b) & 1U);
+        BB_DELAY();
+        BB_SCL(1); BB_DELAY();
+        BB_SCL(0);
+    }
+    /* 9th ACK clock */
+    BB_SDA(1); BB_DELAY();
+    BB_SCL(1); BB_DELAY();
+    BB_SCL(0); BB_DELAY();
+
+    for (int i = 0; i < len; i++) {
+        uint8_t byte_val = data[i];
+        for (int b = 7; b >= 0; b--) {
+            BB_SDA((byte_val >> b) & 1U);
+            BB_DELAY();
+            BB_SCL(1); BB_DELAY();
+            BB_SCL(0);
+        }
+        /* 9th ACK clock */
+        BB_SDA(1); BB_DELAY();
+        BB_SCL(1); BB_DELAY();
+        BB_SCL(0); BB_DELAY();
+    }
+
+    /* STOP */
+    BB_SDA(0); BB_DELAY();
+    BB_SCL(1); BB_DELAY();
+    BB_SDA(1); BB_DELAY();
+
+    #undef BB_DELAY
+    #undef BB_SDA
+    #undef BB_SCL
+
     daphne_hw_i2c_init(bus_num, 400000);
 }
 

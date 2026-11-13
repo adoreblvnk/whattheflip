@@ -43,7 +43,46 @@
 /* Static BER Tracking State */
 LOCAL daphne_ber_stats_t s_ber_stats;
 LOCAL uint32_t s_last_counter = 0;
+LOCAL bool     s_uart_synced  = false;
+LOCAL uint32_t s_uart_baud    = 115200U;
+LOCAL uint32_t s_bad_streak   = 0U;
+LOCAL uint32_t s_idle_ticks   = 0U;
 
+LOCAL void daphne_apply_uart_baud(uint32_t baud)
+{
+    uint32_t ibrd = 67U;
+    uint32_t fbrd = 52U;
+    switch (baud) {
+    case 9600U:
+        ibrd = 813U;
+        fbrd = 51U;
+        break;
+    case 38400U:
+        ibrd = 203U;
+        fbrd = 29U;
+        break;
+    case 57600U:
+        ibrd = 135U;
+        fbrd = 41U;
+        break;
+    case 115200U:
+    default:
+        ibrd = 67U;
+        fbrd = 52U;
+        break;
+    }
+    out_w(DAPHNE_UART_CR, 0U);
+    out_w(DAPHNE_UART_IBRD, ibrd);
+    out_w(DAPHNE_UART_FBRD, fbrd);
+    out_w(DAPHNE_UART_LCR_H, (3U << 5) | (1U << 4));
+    out_w(DAPHNE_UART_CR, (1U << 9) | (1U << 8) | (1U << 0));
+    /* Flush stale bytes from RX FIFO after baud switch */
+    int flush_limit = 64;
+    while ((in_w(DAPHNE_UART_FR) & DAPHNE_UART_FR_RXFE) == 0 && --flush_limit > 0) {
+        (void)in_w(DAPHNE_UART_DR);
+    }
+    s_uart_baud = baud;
+}
 EXPORT void daphne_uart_get_ber_stats(daphne_ber_stats_t *out_stats)
 {
     if (out_stats != NULL) {
@@ -236,16 +275,21 @@ EXPORT void daphne_uart_rx_task(INT stacd, void *exinf)
     daphne_uart_hw_init();
     daphne_uart_reset_ber_stats();
 
-    tm_printf((UB *)"[DAPHNE:CORE0] UART RX task online with BER tracking (Processor %d, GP1 @ 115200)\n",
+    tm_printf((UB *)"[DAPHNE:CORE0] UART RX task online with auto-baud & BER tracking (Processor %d, GP1)\n",
               tk_get_prc());
 
+    static const uint32_t k_bauds[4] = { 115200U, 57600U, 38400U, 9600U };
+    uint32_t baud_idx = 0U;
     LOCAL char rx_line[DAPHNE_RX_BUF_SIZE];
     LOCAL char exp_line[DAPHNE_RX_BUF_SIZE];
     uint32_t rx_idx = 0;
 
     for (;;) {
+        bool got_any = false;
         /* Read characters until RX FIFO is empty */
         while ((in_w(DAPHNE_UART_FR) & DAPHNE_UART_FR_RXFE) == 0) {
+            got_any = true;
+            s_idle_ticks = 0U;
             char ch = (char)(in_w(DAPHNE_UART_DR) & 0xFF);
 
             if (ch == '\n' || ch == '\r') {
@@ -273,19 +317,28 @@ EXPORT void daphne_uart_rx_task(INT stacd, void *exinf)
 
                         if (csum == expected_csum) {
                             /* Frame completely valid */
+                            if (!s_uart_synced) {
+                                s_uart_synced = true;
+                                tm_printf((UB *)"[DAPHNE:UART] Auto-baud locked at %u bps\n", (unsigned)s_uart_baud);
+                            }
+                            s_bad_streak = 0U;
                             s_ber_stats.valid_frames++;
                             s_ber_stats.total_bits_monitored += frame_bits;
                             s_ber_stats.last_frame_bit_errors = 0;
                             s_last_counter = counter;
                             daphne_hw_gpio_set(3, false); /* Valid: Turn OFF GP3 LED */
                             if ((s_ber_stats.valid_frames % 5) == 0 || s_ber_stats.valid_frames <= 3) {
-                                tm_printf((UB *)"[DAPHNE:UART] PKT #%u VALID (total=%u, valid=%u, corrupt=%u)\n",
-                                          counter, s_ber_stats.total_frames, s_ber_stats.valid_frames, s_ber_stats.corrupt_frames);
+                                tm_printf((UB *)"[DAPHNE:UART] PKT #%u VALID @ %u bps (total=%u, valid=%u, corrupt=%u)\n",
+                                          counter, (unsigned)s_uart_baud, s_ber_stats.total_frames,
+                                          s_ber_stats.valid_frames, s_ber_stats.corrupt_frames);
                             }
                         } else {
                             /* Checksum corrupted by glitch */
-                            daphne_hw_gpio_set(3, true);  /* Corrupted: Turn ON GP3 LED */
-                            daphne_hw_buzzer_beep(25);     /* Audible chirp on corrupt frame */
+                            s_bad_streak = 0U;
+                            if (s_uart_synced) {
+                                daphne_hw_gpio_set(3, true);  /* Corrupted: Turn ON GP3 LED */
+                                daphne_hw_buzzer_beep(25);     /* Audible chirp on corrupt frame */
+                            }
                             s_ber_stats.corrupt_frames++;
                             uint32_t err_bits = daphne_calc_bit_diff(rx_line, (int)rx_idx, exp_line, exp_len);
                             if (err_bits == 0) {
@@ -310,15 +363,26 @@ EXPORT void daphne_uart_rx_task(INT stacd, void *exinf)
                                       s_ber_stats.valid_frames, s_ber_stats.corrupt_frames);
                         }
                     } else {
-                        /* Framing corrupted: estimate expected counter from sequence */
+                        /* Framing corrupted or baud mismatch */
+                        s_bad_streak++;
+                        if (s_uart_synced && s_bad_streak <= 2U) {
+                            daphne_hw_gpio_set(3, true);   /* Framing error: Turn ON GP3 LED */
+                            daphne_hw_buzzer_beep(25);      /* Audible chirp on framing error */
+                        } else if (s_bad_streak >= 4U) {
+                            /* Lost baud sync (e.g. Hestia changed baud rate) -> silent hunt */
+                            s_uart_synced = false;
+                            daphne_hw_gpio_set(3, false);
+                            baud_idx = (baud_idx + 1U) & 3U;
+                            daphne_apply_uart_baud(k_bauds[baud_idx]);
+                            s_bad_streak = 0U;
+                            rx_idx = 0;
+                            continue;
+                        }
                         s_ber_stats.corrupt_frames++;
-                        daphne_hw_gpio_set(3, true);   /* Framing error: Turn ON GP3 LED */
-                        daphne_hw_buzzer_beep(25);      /* Audible chirp on framing error */
                         uint32_t exp_ctr = (s_last_counter > 0) ? (s_last_counter + 1) : 1;
                         uint16_t exp_csum = (uint16_t)(~exp_ctr);
                         int exp_len = daphne_format_expected(exp_line, exp_ctr, exp_csum);
                         uint32_t frame_bits = (uint32_t)(exp_len * 8);
-
                         uint32_t err_bits = daphne_calc_bit_diff(rx_line, (int)rx_idx, exp_line, exp_len);
                         if (err_bits == 0) {
                             err_bits = 8;
@@ -348,13 +412,26 @@ EXPORT void daphne_uart_rx_task(INT stacd, void *exinf)
                 } else {
                     /* Overflow from sustained noise or glitch */
                     rx_line[rx_idx] = '\0';
-                    s_ber_stats.corrupt_frames++;
-                    s_ber_stats.total_frames++;
-                    s_ber_stats.total_bit_errors += (rx_idx * 8);
-                    s_ber_stats.total_bits_monitored += (rx_idx * 8);
-                    tm_printf((UB *)"[DAPHNE:UART] BUFFER OVERFLOW: raw=[%s]\n", rx_line);
+                    s_bad_streak++;
+                    if (!s_uart_synced || s_bad_streak >= 4U) {
+                        s_uart_synced = false;
+                        daphne_hw_gpio_set(3, false);
+                        baud_idx = (baud_idx + 1U) & 3U;
+                        daphne_apply_uart_baud(k_bauds[baud_idx]);
+                        s_bad_streak = 0U;
+                    }
                     rx_idx = 0;
                 }
+            }
+        }
+
+        if (!got_any && !s_uart_synced) {
+            s_idle_ticks++;
+            if (s_idle_ticks >= 120U) { /* ~1.2 s idle at wrong baud -> try next */
+                s_idle_ticks = 0U;
+                baud_idx = (baud_idx + 1U) & 3U;
+                daphne_apply_uart_baud(k_bauds[baud_idx]);
+                rx_idx = 0;
             }
         }
 

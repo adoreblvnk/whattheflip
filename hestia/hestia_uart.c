@@ -29,14 +29,19 @@
 #define HESTIA_UART_FR_RXFE     (1 << 4) /* Receive FIFO empty */
 #define HESTIA_UART_FR_BUSY     (1 << 3) /* UART busy */
 
-#define HESTIA_BUF_SIZE         64
+#define HESTIA_BUF_SIZE         80
 #define HESTIA_BURST_LEN        16
+#define HESTIA_FLAG_STR         "WTF{keep_your_hands_off_my_altar}"
+
+/* RP2040 Hardware Random & Timer Registers for dynamic boot baud selection */
+#define RP2040_ROSC_RANDOMBIT   0x4006001CUL
+#define RP2040_TIMERAWL         0x40054028UL
 
 /* Static State */
 LOCAL volatile uint32_t s_tx_rate_hz   = HESTIA_DEFAULT_RATE_HZ;
 LOCAL volatile uint32_t s_tx_period_ms = 1000U / HESTIA_DEFAULT_RATE_HZ;
 LOCAL volatile uint8_t  s_tx_mode      = HESTIA_DEFAULT_MODE;
-
+LOCAL volatile uint32_t s_tx_baud      = HESTIA_BAUD_115200;
 EXPORT ER hestia_uart_set_rate(uint32_t rate_hz)
 {
     if (rate_hz == 0U || rate_hz > 100U) {
@@ -80,6 +85,68 @@ EXPORT uint8_t hestia_uart_get_mode(void)
 {
     return s_tx_mode;
 }
+LOCAL void hestia_apply_baud_regs(uint32_t baud)
+{
+    uint32_t ibrd = 67U;
+    uint32_t fbrd = 52U;
+    switch (baud) {
+    case 9600U:
+        ibrd = 813U;
+        fbrd = 51U;
+        break;
+    case 38400U:
+        ibrd = 203U;
+        fbrd = 29U;
+        break;
+    case 57600U:
+        ibrd = 135U;
+        fbrd = 41U;
+        break;
+    case 115200U:
+    default:
+        ibrd = 67U;
+        fbrd = 52U;
+        break;
+    }
+
+    /* Wait until TX FIFO / shifter idle before changing divisor */
+    int wait_loops = 100000;
+    while ((in_w(HESTIA_UART_FR) & HESTIA_UART_FR_BUSY) != 0 && --wait_loops > 0) {
+    }
+    out_w(HESTIA_UART_CR, 0U);
+    out_w(HESTIA_UART_IBRD, ibrd);
+    out_w(HESTIA_UART_FBRD, fbrd);
+    out_w(HESTIA_UART_LCR_H, (3U << 5) | (1U << 4));
+    out_w(HESTIA_UART_CR, (1U << 9) | (1U << 8) | (1U << 0));
+}
+
+EXPORT ER hestia_uart_set_baud(uint32_t baud)
+{
+    if (baud != 9600U && baud != 38400U && baud != 57600U && baud != 115200U) {
+        return E_PAR;
+    }
+    s_tx_baud = baud;
+    hestia_apply_baud_regs(baud);
+    tm_printf((UB *)"[HESTIA:CFG] UART0 baud rate set to %u bps\n", (unsigned)baud);
+    return E_OK;
+}
+
+EXPORT uint32_t hestia_uart_get_baud(void)
+{
+    return s_tx_baud;
+}
+
+LOCAL uint32_t hestia_pick_random_baud(void)
+{
+    static const uint32_t k_bauds[4] = { 9600U, 38400U, 57600U, 115200U };
+    uint32_t entropy = in_w(RP2040_TIMERAWL);
+    for (int i = 0; i < 16; i++) {
+        entropy = (entropy << 1) ^ (in_w(RP2040_ROSC_RANDOMBIT) & 1UL) ^ in_w(RP2040_TIMERAWL);
+        for (volatile int d = 0; d < 47; d++) {
+        }
+    }
+    return k_bauds[entropy & 3U];
+}
 
 #define HESTIA_LED_MASK         0x000003FCUL /* GP2..GP9 on Maker Pi Base */
 
@@ -106,24 +173,15 @@ LOCAL void hestia_uart_hw_init(void)
     out_w(GPIO_OUT_CLR, HESTIA_LED_MASK);
     out_w(GPIO_OE_SET, HESTIA_LED_MASK);
 
-    /* 115200 baud at 125 MHz sys_clk:
-     * Divisor = 125,000,000 / (16 * 115200) = 67.816666...
-     * IBRD = 67, FBRD = round(0.816666 * 64) = 52.
-     */
-    out_w(HESTIA_UART_IBRD, 67);
-    out_w(HESTIA_UART_FBRD, 52);
-
-    /* 8 bits, 1 stop bit, no parity, FIFO enable (0x70) */
-    out_w(HESTIA_UART_LCR_H, (3 << 5) | (1 << 4));
-
-    /* Enable UART, TX and RX (0x301) */
-    out_w(HESTIA_UART_CR, (1 << 9) | (1 << 8) | (1 << 0));
+    /* Pick dynamic random baud rate from {9600, 38400, 57600, 115200} */
+    s_tx_baud = hestia_pick_random_baud();
+    hestia_apply_baud_regs(s_tx_baud);
 }
 
 LOCAL int hestia_format_packet(char *buf, uint32_t counter, uint16_t checksum)
 {
     /* Deterministic formatting without libc sprintf allocation:
-     * "HESTIA:<counter>:<checksum>\n"
+     * "HESTIA:<counter>:<checksum>:WTF{keep_your_hands_off_my_altar}\n"
      */
     const char prefix[] = "HESTIA:";
     int idx = 0;
@@ -157,9 +215,14 @@ LOCAL int hestia_format_packet(char *buf, uint32_t counter, uint16_t checksum)
     buf[idx++] = hex_chars[(checksum >> 4)  & 0x0F];
     buf[idx++] = hex_chars[checksum & 0x0F];
 
+    buf[idx++] = ':';
+    const char flag[] = HESTIA_FLAG_STR;
+    for (int i = 0; flag[i] != '\0'; i++) {
+        buf[idx++] = flag[i];
+    }
+
     buf[idx++] = '\n';
     buf[idx] = '\0';
-
     return idx;
 }
 
@@ -223,6 +286,19 @@ LOCAL void hestia_uart_check_rx_cmds(void)
         case 'i':
             (void)hestia_uart_set_mode(HESTIA_MODE_INTERLEAVED);
             break;
+        case 'B':
+        case 'b': {
+            static const uint32_t k_bauds[4] = { 9600U, 38400U, 57600U, 115200U };
+            uint32_t next = k_bauds[0];
+            for (int i = 0; i < 4; i++) {
+                if (k_bauds[i] == s_tx_baud) {
+                    next = k_bauds[(i + 1) & 3];
+                    break;
+                }
+            }
+            (void)hestia_uart_set_baud(next);
+            break;
+        }
         default:
             break;
         }
@@ -235,9 +311,8 @@ EXPORT void hestia_uart_tx_task(INT stacd, void *exinf)
     (void)exinf;
 
     hestia_uart_hw_init();
-    tm_printf((UB *)"[HESTIA:CORE0] UART TX task online (Processor %d, GP0 @ 115200, default %u Hz, mode=%u)\n",
-              tk_get_prc(), (unsigned)s_tx_rate_hz, (unsigned)s_tx_mode);
-
+    tm_printf((UB *)"[HESTIA:CORE0] UART TX task online (Processor %d, GP0 @ %u baud, default %u Hz, mode=%u)\n",
+              tk_get_prc(), (unsigned)s_tx_baud, (unsigned)s_tx_rate_hz, (unsigned)s_tx_mode);
     uint32_t counter = 0;
     LOCAL char pkt_buf[HESTIA_BUF_SIZE];
 
@@ -286,6 +361,7 @@ EXPORT void hestia_uart_tx_task(INT stacd, void *exinf)
         uint32_t active_led_pin = 2U + (counter & 7U);
         out_w(GPIO_OUT_CLR, HESTIA_LED_MASK);
         out_w(GPIO_OUT_SET, (1UL << active_led_pin));
+
 
         /* Dynamic rate delay (e.g. 1000 ms @ 1 Hz, 500 ms @ 2 Hz, 100 ms @ 10 Hz) */
         tk_dly_tsk((RELTIM)s_tx_period_ms);

@@ -38,17 +38,24 @@
 #define LSM303_MR_REG_M         0x02
 #define LSM303_OUT_X_H_M        0x03
 
+#define DAPHNE_I2C_FLAG_ADDR    0x57
+#define DAPHNE_I2C_FLAG_STR     "WTF{you_can_wear_my_crown_but_never_my_flesh}"
+
 LOCAL uint32_t s_i2c_recovery_count = 0;
+LOCAL bool s_sensor_online = false;
+LOCAL bool s_i2c_in_fault  = false;
 
 EXPORT void daphne_i2c_bus_recovery(uint8_t bus)
 {
     s_i2c_recovery_count++;
-    /* Turn ON physical GP2 blue LED on Maker Pi Base during fault/recovery */
-    daphne_hw_gpio_set(2, true);
-    daphne_hw_buzzer_beep(30); /* Audible 2 kHz chirp on I2C fault */
+    /* Turn ON physical GP2 blue LED and chirp GP18 buzzer ONCE on fault transition */
+    if (s_sensor_online && !s_i2c_in_fault) {
+        daphne_hw_gpio_set(2, true);
+        daphne_hw_buzzer_beep(30); /* Audible 2 kHz chirp on I2C fault */
+        s_i2c_in_fault = true;
+    }
     tm_printf((UB *)"[DAPHNE:I2C] Bus fault detected! Executing 9-clock recovery on I2C%d (recovery #%u)...\n",
               (unsigned)bus, (unsigned)s_i2c_recovery_count);
-    /* 1. Low-level 9-clock SCL toggle and STOP condition */
     daphne_hw_i2c_bus_recovery(bus);
 
     /* 2. Re-configure sensor control registers in case sensor was wedged */
@@ -183,14 +190,14 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
     daphne_hw_i2c_init(1, 100000);
     int found1 = daphne_i2c_bus_scan(1);
 
-    uint8_t active_bus = 0;
+    uint8_t active_bus = 1;
     if (found1 > 0) {
         active_bus = 1;
     } else if (found0 > 0) {
         active_bus = 0;
     } else {
-        /* Default to GP6/GP7 if GP6/GP7 are HIGH in raw pin scan, else GP4/GP5 */
-        active_bus = ((raw_pins & (1 << 6)) && (raw_pins & (1 << 7))) ? 1 : 0;
+        /* Default to I2C1 (GP6/GP7, Row 55/58) which is wired to whattheflip P2/P3 */
+        active_bus = 1;
     }
 
     tm_printf((UB *)"[DAPHNE:I2C] Selected active bus: I2C%d (%s @ 400 kHz)\n",
@@ -276,6 +283,8 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
                 int16_t mag_y = (int16_t)(((uint16_t)mag_raw_buf[4] << 8) | mag_raw_buf[5]);
 
                 /* Log every poll (5 Hz) with raw 0xA8 register hex bytes + moving-average mg */
+                s_sensor_online = true;
+                s_i2c_in_fault  = false;
                 daphne_hw_gpio_set(2, false); /* Clear fault LED on success */
                 tm_printf((UB *)"[DAPHNE:I2C] ACCEL mg: X=%d Y=%d Z=%d (avg: X=%d Y=%d Z=%d) [0xA8: %02X %02X %02X %02X %02X %02X] | MAG: X=%d Y=%d Z=%d\n",
                           raw_x, raw_y, raw_z, avg_x, avg_y, avg_z,
@@ -290,9 +299,31 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
             }
         } else {
             i2c_fault_count++;
-            tm_printf((UB *)"[DAPHNE:I2C] FAULT: Accel read failed (err=%d, abrt=0x%04X, faults=%u)\n",
-                      ret, daphne_hw_i2c_get_abrt_source(), i2c_fault_count);
+            if ((i2c_fault_count % 25U) == 1U || s_sensor_online) {
+                tm_printf((UB *)"[DAPHNE:I2C] FAULT: Accel read failed (err=%d, abrt=0x%04X, faults=%u)\n",
+                          ret, daphne_hw_i2c_get_abrt_source(), i2c_fault_count);
+            }
             daphne_i2c_bus_recovery(active_bus);
+            if (!s_sensor_online && (i2c_fault_count % 10U) == 0U) {
+                daphne_hw_i2c_init(0, 100000);
+                int f0 = daphne_i2c_bus_scan(0);
+                daphne_hw_i2c_init(1, 100000);
+                int f1 = daphne_i2c_bus_scan(1);
+                if (f1 > 0) active_bus = 1;
+                else if (f0 > 0) active_bus = 0;
+                daphne_hw_i2c_init(active_bus, 400000);
+                (void)daphne_hw_i2c_write(LSM303_ACCEL_ADDR, cfg_a1, 2, false);
+                (void)daphne_hw_i2c_write(LSM303_ACCEL_ADDR, cfg_a4, 2, false);
+                (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_cra, 2, false);
+                (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_crb, 2, false);
+                (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_mr, 2, false);
+            }
+        }
+
+        /* Every 1 second (5 polls), emit Daphne's I2C CTF flag frame on SDA/SCL (0x57) for physical sniffing */
+        if ((poll_count % 5U) == 0U) {
+            static const uint8_t k_flag[] = DAPHNE_I2C_FLAG_STR;
+            daphne_hw_i2c_bitbang_frame(active_bus, DAPHNE_I2C_FLAG_ADDR, k_flag, (int)(sizeof(k_flag) - 1U));
         }
 
         /* 200 ms sample period (5 Hz logging rate) */
