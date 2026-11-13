@@ -274,8 +274,8 @@ void daphne_hw_i2c_bitbang_frame(uint8_t bus_num, uint8_t addr7, const uint8_t *
     sio_hw->gpio_oe_clr = (1U << sda_pin) | (1U << scl_pin);
     sio_hw->gpio_clr = (1U << sda_pin) | (1U << scl_pin);
 
-    /* ~100 kHz open-drain bitbang so whattheflip IRAM ISR captures every bit cleanly */
-    #define BB_DELAY() do { for (volatile int _d = 0; _d < 220; _d++) {} } while (0)
+    /* ~40 kHz open-drain bitbang so internal pull-ups rise cleanly */
+    #define BB_DELAY() do { for (volatile int _d = 0; _d < 1600; _d++) {} } while (0)
     #define BB_SDA(h) do { if (h) sio_hw->gpio_oe_clr = (1U << sda_pin); else sio_hw->gpio_oe_set = (1U << sda_pin); } while (0)
     #define BB_SCL(h) do { if (h) sio_hw->gpio_oe_clr = (1U << scl_pin); else sio_hw->gpio_oe_set = (1U << scl_pin); } while (0)
 

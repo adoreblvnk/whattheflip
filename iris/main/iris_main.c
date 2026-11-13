@@ -44,6 +44,7 @@ static volatile bool     s_wifi_jammed     = false;
 static volatile bool     s_154_jammed      = false;
 static volatile bool     s_espnow_done     = true;
 static volatile uint32_t s_espnow_cb_cnt   = 0;
+static volatile bool     s_154_tx_done     = true;
 
 static void iris_espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
 {
@@ -148,12 +149,14 @@ void esp_ieee802154_transmit_done(const uint8_t *frame, const uint8_t *ack, esp_
     (void)frame;
     (void)ack;
     (void)ack_frame_info;
+    s_154_tx_done = true;
 }
 
 void esp_ieee802154_transmit_failed(const uint8_t *frame, esp_ieee802154_tx_error_t error)
 {
     (void)frame;
     (void)error;
+    s_154_tx_done = true;
 }
 
 void esp_ieee802154_transmit_sfd_done(uint8_t *frame)
@@ -317,7 +320,7 @@ static esp_err_t iris_send_154_frame(uint8_t ch, bool is_true_ch, uint8_t seq)
         plen = hlen + 36;
     }
 
-    uint8_t psdu_len = (uint8_t)(9U + plen);
+    uint8_t psdu_len = (uint8_t)(9U + plen + 2U); /* 9B MHR + payload + 2B HW FCS */
     frame_buf[0] = psdu_len;
     frame_buf[1] = 0x41; /* FCF LSB: Data frame, PAN ID comp */
     frame_buf[2] = 0x88; /* FCF MSB: Short dest, short src */
@@ -331,7 +334,14 @@ static esp_err_t iris_send_154_frame(uint8_t ch, bool is_true_ch, uint8_t seq)
     memcpy(&frame_buf[10], payload, plen);
 
     (void)esp_ieee802154_set_channel(ch);
-    return esp_ieee802154_transmit(frame_buf, false);
+    s_154_tx_done = false;
+    esp_err_t err = esp_ieee802154_transmit(frame_buf, false);
+    if (err == ESP_OK) {
+        for (int w = 0; w < 10 && !s_154_tx_done; w++) {
+            tk_dly_tsk(1);
+        }
+    }
+    return err;
 }
 
 /* Cat-and-Mouse Dual-Radio Transmitter & Jam-Hop Coordinator */
@@ -390,11 +400,9 @@ static void task_iris_transmitter(INT stacd, void *exinf)
 
         /* 2. 802.15.4 Phase: transmit cleartext on s_true_154_ch, then sweep 15 decoys */
         last_154_err = iris_send_154_frame(s_true_154_ch, true, (uint8_t)seq);
-        tk_dly_tsk(4);
         for (uint8_t zch = 11U; zch <= 26U; zch++) {
             if (zch != s_true_154_ch) {
                 (void)iris_send_154_frame(zch, false, (uint8_t)seq);
-                tk_dly_tsk(2);
             }
         }
         (void)esp_ieee802154_set_channel(s_true_154_ch);

@@ -54,8 +54,10 @@ EXPORT void daphne_i2c_bus_recovery(uint8_t bus)
         daphne_hw_buzzer_beep(30); /* Audible 2 kHz chirp on I2C fault */
         s_i2c_in_fault = true;
     }
-    tm_printf((UB *)"[DAPHNE:I2C] Bus fault detected! Executing 9-clock recovery on I2C%d (recovery #%u)...\n",
-              (unsigned)bus, (unsigned)s_i2c_recovery_count);
+    if (s_sensor_online || (s_i2c_recovery_count % 25U) == 1U) {
+        tm_printf((UB *)"[DAPHNE:I2C] Bus fault detected! Executing 9-clock recovery on I2C%d (recovery #%u)...\n",
+                  (unsigned)bus, (unsigned)s_i2c_recovery_count);
+    }
     daphne_hw_i2c_bus_recovery(bus);
 
     /* 2. Re-configure sensor control registers in case sensor was wedged */
@@ -71,8 +73,10 @@ EXPORT void daphne_i2c_bus_recovery(uint8_t bus)
     (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_crb, 2, false);
     (void)daphne_hw_i2c_write(LSM303_MAG_ADDR, cfg_m_mr, 2, false);
 
-    tm_printf((UB *)"[DAPHNE:I2C] 9-clock recovery complete on I2C%d: STOP sent, bus clear\n",
-              (unsigned)bus);
+    if (s_sensor_online || (s_i2c_recovery_count % 25U) == 1U) {
+        tm_printf((UB *)"[DAPHNE:I2C] 9-clock recovery complete on I2C%d: STOP sent, bus clear\n",
+                  (unsigned)bus);
+    }
 }
 
 /* Filter Window */
