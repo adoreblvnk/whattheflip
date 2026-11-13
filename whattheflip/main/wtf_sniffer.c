@@ -815,21 +815,23 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                             scan_buf[scan_len++] = (char)ch;
                         }
                         scan_buf[scan_len] = '\0';
-                        uint32_t ctr = 0;
-                        uint16_t csum = 0;
-                        if (wtf_parse_canonical_uart(scan_buf, &ctr, &csum) && wtf_verify_uart_checksum(ctr, csum)) {
-                            s_uart_baud = test_baud;
-                            s_uart_last_clear = true;
-                            sniffer_sanitize_sample(s_uart_last_sample, sizeof(s_uart_last_sample),
-                                                    (const uint8_t *)scan_buf, (size_t)scan_len);
-                            (void)sniffer_extract_flag(scan_buf, (size_t)scan_len, s_ctf_uart_flag, sizeof(s_ctf_uart_flag));
-                            if (s_ctf_uart_flag[0] != '\0') {
-                                s_intercept_mask |= (1U << 0);
-                                sniffer_check_bonus_unlock();
+                        if (strchr(scan_buf, '\n') != NULL || strchr(scan_buf, '\r') != NULL) {
+                            uint32_t ctr = 0;
+                            uint16_t csum = 0;
+                            if (wtf_parse_canonical_uart(scan_buf, &ctr, &csum) && wtf_verify_uart_checksum(ctr, csum)) {
+                                s_uart_baud = test_baud;
+                                s_uart_last_clear = true;
+                                sniffer_sanitize_sample(s_uart_last_sample, sizeof(s_uart_last_sample),
+                                                        (const uint8_t *)scan_buf, (size_t)scan_len);
+                                (void)sniffer_extract_flag(scan_buf, (size_t)scan_len, s_ctf_uart_flag, sizeof(s_ctf_uart_flag));
+                                if (s_ctf_uart_flag[0] != '\0') {
+                                    s_intercept_mask |= (1U << 0);
+                                    sniffer_check_bonus_unlock();
+                                }
+                                tm_printf((UB *)"[SNIFFER:UART] AUTO-DETECT LOCKED: %u bps\n", (unsigned)test_baud);
+                                matched = true;
+                                break;
                             }
-                            tm_printf((UB *)"[SNIFFER:UART] AUTO-DETECT LOCKED: %u bps\n", (unsigned)test_baud);
-                            matched = true;
-                            break;
                         }
                     }
                 }
@@ -1011,7 +1013,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                 if (ch != SOFTAP_HOME_CHANNEL) {
                     (void)esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
                 }
-                for (int w = 0; w < 45 && !s_wifi_last_clear && !wtf_safety_is_aborted(); w++) {
+                for (int w = 0; w < 30 && !s_wifi_last_clear && !wtf_safety_is_aborted(); w++) {
                     tk_dly_tsk(10);
                 }
                 s_wifi_burst_active = false;
@@ -1023,7 +1025,8 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                     tm_printf((UB *)"[SNIFFER:WIFI] AUTO-SCAN LOCKED: Ch %u\n", (unsigned)ch);
                     break;
                 }
-                tk_dly_tsk(30);
+                /* Dwell 105 ms on Ch 6 so SoftAP 100 ms beacons keep browser connected */
+                tk_dly_tsk(105);
             }
         }
         /* 5. Firmware-Driven Zigbee Auto-Scan (Ch 11..26) — stops immediately on cleartext lock */
@@ -1032,7 +1035,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             for (uint8_t ch = 11U; ch <= 26U && !wtf_safety_is_aborted() &&
                  wtf_discovery_get_tool_mode() == WTF_TOOL_MODE_ZIGBEE; ch++) {
                 wtf_sniffer_set_154_channel(ch);
-                for (int w = 0; w < 45 && !s_154_last_clear && !wtf_safety_is_aborted(); w++) {
+                for (int w = 0; w < 32 && !s_154_last_clear && !wtf_safety_is_aborted(); w++) {
                     tk_dly_tsk(10);
                 }
                 if (s_154_last_clear) {

@@ -131,7 +131,24 @@ def wtf_serial_reader():
             if ser_wtf is None:
                 ser_wtf = serial.Serial(PORT_WTF, 115200, timeout=0.2)
                 print(f"[BRIDGE] Connected to whattheflip on {PORT_WTF}")
-                ser_wtf.write(b"MODE:off\nCLEAR\n")
+                reset_pcap_buffer()
+                state["tool_mode"] = "OFF"
+                state["uart_pkts"] = 0
+                state["i2c_pkts"] = 0
+                state["wifi_pkts"] = 0
+                state["ieee154_pkts"] = 0
+                state["uart_clear"] = False
+                state["uart_sample"] = ""
+                state["wifi_clear"] = False
+                state["wifi_sample_ch"] = 0
+                state["wifi_sample"] = ""
+                state["z154_clear"] = False
+                state["z154_sample"] = ""
+                state["ctf"] = {"uart": "", "i2c": "", "wifi": "", "zigbee": "", "bonus": "", "imask": 0, "emask": 0}
+                ser_wtf.write(b"MODE:off\n")
+                ser_wtf.flush()
+                time.sleep(0.05)
+                ser_wtf.write(b"CLEAR\n")
                 ser_wtf.flush()
             line = ser_wtf.readline().decode("utf-8", errors="replace").strip()
             if not line:
