@@ -61,13 +61,9 @@ static void iris_update_beacon_ie(void)
     vnd_buf[0] = 0xDD;
     vnd_buf[2] = 0x02; vnd_buf[3] = 0x00; vnd_buf[4] = 0x03;
     vnd_buf[5] = s_true_wifi_ch;
-    const char *hdr = "IRIS:WIFI:";
-    const char *flg = IRIS_WIFI_FLAG;
-    size_t hlen = strlen(hdr);
-    size_t flen = strlen(flg);
-    memcpy(&vnd_buf[6], hdr, hlen);
-    memcpy(&vnd_buf[6 + hlen], flg, flen);
-    vnd_buf[1] = (uint8_t)(4U + hlen + flen);
+    int n = snprintf((char *)&vnd_buf[6], sizeof(vnd_buf) - 6U, "IRIS:WIFI:%u:%s", (unsigned)s_true_wifi_ch, IRIS_WIFI_FLAG);
+    size_t plen = (n > 0) ? (size_t)n : 0U;
+    vnd_buf[1] = (uint8_t)(4U + plen);
     (void)esp_wifi_set_vendor_ie(false, WIFI_VND_IE_TYPE_BEACON, WIFI_VND_IE_ID_0, NULL);
     (void)esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, WIFI_VND_IE_ID_0, vnd_buf);
 }
@@ -268,23 +264,17 @@ static void iris_fill_scrambled(uint8_t *dst, size_t len, uint8_t ch, uint32_t s
 
 static esp_err_t iris_send_wifi_frame(uint8_t ch, bool is_true_ch, uint32_t seq)
 {
-    uint8_t payload[64];
+    uint8_t payload[72];
     size_t pay_len = 0;
 
     if (is_true_ch) {
-        const char *hdr = "IRIS:WIFI:";
-        const char *flg = IRIS_WIFI_FLAG;
-        size_t hlen = strlen(hdr);
-        size_t flen = strlen(flg);
-        memcpy(payload, hdr, hlen);
-        memcpy(payload + hlen, flg, flen);
-        pay_len = hlen + flen;
+        int n = snprintf((char *)payload, sizeof(payload), "IRIS:WIFI:%u:%s", (unsigned)ch, IRIS_WIFI_FLAG);
+        pay_len = (n > 0) ? (size_t)n : 0U;
     } else {
-        const char *hdr = "IRIS:SCRM:";
-        size_t hlen = strlen(hdr);
-        memcpy(payload, hdr, hlen);
-        iris_fill_scrambled(payload + hlen, 36, ch, seq);
-        pay_len = hlen + 36;
+        int n = snprintf((char *)payload, sizeof(payload), "IRIS:SCRM:%u:", (unsigned)ch);
+        size_t hlen = (n > 0) ? (size_t)n : 0U;
+        iris_fill_scrambled(payload + hlen, 32, ch, seq);
+        pay_len = hlen + 32;
     }
 
     (void)esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
@@ -301,23 +291,17 @@ static esp_err_t iris_send_wifi_frame(uint8_t ch, bool is_true_ch, uint32_t seq)
 static esp_err_t iris_send_154_frame(uint8_t ch, bool is_true_ch, uint8_t seq)
 {
     uint8_t frame_buf[96];
-    char payload[64];
+    char payload[72];
     size_t plen = 0;
 
     if (is_true_ch) {
-        const char *hdr = "IRIS:154:";
-        const char *flg = IRIS_154_FLAG;
-        size_t hlen = strlen(hdr);
-        size_t flen = strlen(flg);
-        memcpy(payload, hdr, hlen);
-        memcpy(payload + hlen, flg, flen);
-        plen = hlen + flen;
+        int n = snprintf(payload, sizeof(payload), "IRIS:154:%u:%s", (unsigned)ch, IRIS_154_FLAG);
+        plen = (n > 0) ? (size_t)n : 0U;
     } else {
-        const char *hdr = "IRIS:SCRM:";
-        size_t hlen = strlen(hdr);
-        memcpy(payload, hdr, hlen);
-        iris_fill_scrambled((uint8_t *)(payload + hlen), 36, ch, seq);
-        plen = hlen + 36;
+        int n = snprintf(payload, sizeof(payload), "IRIS:SCRM:%u:", (unsigned)ch);
+        size_t hlen = (n > 0) ? (size_t)n : 0U;
+        iris_fill_scrambled((uint8_t *)(payload + hlen), 32, ch, seq);
+        plen = hlen + 32;
     }
 
     uint8_t psdu_len = (uint8_t)(9U + plen + 2U); /* 9B MHR + payload + 2B HW FCS */

@@ -38,9 +38,6 @@
 #define LSM303_MR_REG_M         0x02
 #define LSM303_OUT_X_H_M        0x03
 
-#define DAPHNE_I2C_FLAG_ADDR    0x57
-#define DAPHNE_I2C_FLAG_STR     "WTF{you_can_wear_my_crown_but_never_my_flesh}"
-
 LOCAL uint32_t s_i2c_recovery_count = 0;
 LOCAL bool s_sensor_online = false;
 LOCAL bool s_i2c_in_fault  = false;
@@ -324,11 +321,6 @@ EXPORT void daphne_i2c_sensor_task(INT stacd, void *exinf)
             }
         }
 
-        /* Every 1 second (5 polls), emit Daphne's I2C CTF flag frame on SDA/SCL (0x57) for physical sniffing */
-        if ((poll_count % 5U) == 0U) {
-            static const uint8_t k_flag[] = DAPHNE_I2C_FLAG_STR;
-            daphne_hw_i2c_bitbang_frame(active_bus, DAPHNE_I2C_FLAG_ADDR, k_flag, (int)(sizeof(k_flag) - 1U));
-        }
 
         /* 200 ms sample period (5 Hz logging rate) */
         tk_dly_tsk(200);
