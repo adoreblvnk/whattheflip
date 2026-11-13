@@ -36,7 +36,7 @@
 #define IRIS_154_FLAG           "WTF{i_carry_your_messages_not_your_sins}"
 
 /* Dynamic Cat-and-Mouse RF State */
-static volatile uint32_t s_tx_period_ms    = 60;
+static volatile uint32_t s_tx_period_ms    = 30;
 static volatile uint8_t  s_true_wifi_ch    = 6;
 static volatile uint8_t  s_true_154_ch     = 15;
 static volatile uint32_t s_ota_cmd_count   = 0;
