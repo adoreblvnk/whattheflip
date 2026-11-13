@@ -386,6 +386,11 @@ static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
     uint8_t addr7 = (uint8_t)(bytes[0] >> 1U);
     uint8_t rw    = (uint8_t)(bytes[0] & 1U);
 
+    if (addr7 == 0x19U || addr7 == 0x1EU) {
+        s_intercept_mask |= (1U << 1);
+        sniffer_check_bonus_unlock();
+    }
+
     if (rw == 0U) {
         s_i2c_last_reg = bytes[1];
     } else if (rw == 1U && len >= 7U) {

@@ -187,10 +187,16 @@ function clearAllStats() {
 
 let wifiAutoScanning = false;
 let zigbeeAutoScanning = false;
+let modeLockUntil = 0;
+let wifiLockUntil = 0;
+let zigbeeLockUntil = 0;
 
 function selectToolMode(mode) {
   wifiAutoScanning = false;
   zigbeeAutoScanning = false;
+  modeLockUntil = Date.now() + 1500;
+  if (mode === "WIFI") wifiLockUntil = Date.now() + 1500;
+  if (mode === "ZIGBEE") zigbeeLockUntil = Date.now() + 1500;
   toolMode.val = mode;
   if (mode === "OFF" || mode === "AUTO") {
     filterProtocol.val = "ALL";
@@ -228,6 +234,7 @@ function triggerUartAutodetect() {
 }
 
 function selectWifiChannel(ch) {
+  wifiLockUntil = Date.now() + 1500;
   wifiChannelMode.val = ch;
   wifiActiveCh.val = ch;
   wifiSampleCh.val = ch;
@@ -266,6 +273,7 @@ function jamWifiChannel(ch) {
 }
 
 function selectZigbeeChannel(ch) {
+  zigbeeLockUntil = Date.now() + 1500;
   zigbeeChannel.val = ch;
   z154Clear.val = false;
   z154Sample.val = "";
@@ -1332,7 +1340,7 @@ function updateFromTelemetry(d) {
   if (d.safety) {
     safetyState.val = (d.safety === "ABORTED" || d.safety === "Stopped") ? "Stopped" : "Active";
   }
-  if (d.tool_mode && d.tool_mode !== toolMode.val) {
+  if (d.tool_mode && nowMs >= modeLockUntil && d.tool_mode !== toolMode.val) {
     toolMode.val = d.tool_mode;
     filterProtocol.val = (d.tool_mode === "OFF" || d.tool_mode === "AUTO") ? "ALL" : d.tool_mode;
   }
@@ -1360,9 +1368,8 @@ function updateFromTelemetry(d) {
 
   if (d.corrupted_frames != null) corruptedCount.val = d.corrupted_frames;
   if (d.wifi_ch != null) wifiActiveCh.val = d.wifi_ch;
-  if (d.wifi_mode != null) wifiChannelMode.val = d.wifi_mode;
-  if (d.zigbee_ch != null) zigbeeChannel.val = d.zigbee_ch;
-  if (d.uart_baud != null) uartBaud.val = d.uart_baud;
+  if (d.wifi_mode != null && nowMs >= wifiLockUntil) wifiChannelMode.val = d.wifi_mode;
+  if (d.zigbee_ch != null && nowMs >= zigbeeLockUntil) zigbeeChannel.val = d.zigbee_ch;
   if (d.uart_clear != null) uartClear.val = d.uart_clear;
   if (d.uart_sample != null) uartSample.val = d.uart_sample;
   if (d.wifi_clear != null) wifiClear.val = d.wifi_clear;
