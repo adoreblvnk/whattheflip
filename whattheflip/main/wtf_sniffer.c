@@ -800,7 +800,8 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                 char scan_buf[200];
                 int scan_len = 0;
                 bool matched = false;
-                int64_t deadline_us = esp_timer_get_time() + 700000LL;
+                int64_t dwell_us = (test_baud == 9600U) ? 1200000LL : 700000LL;
+                int64_t deadline_us = esp_timer_get_time() + dwell_us;
                 while (esp_timer_get_time() < deadline_us && !wtf_safety_is_aborted()) {
                     int n = uart_read_bytes(UART_SNIFFER_PORT, rx_buf, sizeof(rx_buf), 15 / portTICK_PERIOD_MS);
                     if (n > 0) {
