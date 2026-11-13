@@ -25,6 +25,7 @@
 #include "nvs_flash.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 
 #define MAX_WS_CLIENTS          4
 #define DASHBOARD_WIFI_CHANNEL  6
@@ -113,15 +114,22 @@ static esp_err_t style_css_get_handler(httpd_req_t *req)
 static esp_err_t cmd_post_handler(httpd_req_t *req)
 {
     wtf_sniffer_notify_http_activity();
-    char query[64];
+    char query[96];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char val[16];
         if (httpd_query_key_value(query, "c", val, sizeof(val)) == ESP_OK) {
             char c = val[0];
             if (c == 'E' || c == 'e') {
                 wtf_safety_abort();
+                wtf_dashboard_broadcast_alert("E-Stop activated: whattheflip probes High-Z, LEDs off");
             } else if (c == 'R' || c == 'r') {
                 wtf_safety_rearm();
+                wtf_dashboard_broadcast_alert("whattheflip resumed (Active)");
+            } else if (c == 'C' || c == 'c') {
+                wtf_fuzzer_cancel();
+                wtf_sniffer_clear_stats();
+                wtf_dashboard_clear_stats();
+                wtf_dashboard_broadcast_alert("Stats cleared and fault injection stopped");
             } else if (c == 'U' || c == 'u') {
                 wtf_fuzzer_inject_uart();
             } else if (c == 'A' || c == 'a') {
@@ -130,23 +138,34 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
                 wtf_fuzzer_inject_i2c_stretch();
             } else if (c == 'W' || c == 'w') {
                 wtf_fuzzer_inject_wireless_jam();
+            } else if (c == 'J' || c == 'j') {
+                wtf_fuzzer_inject_wifi_jam(wtf_sniffer_get_wifi_channel());
             }
+        }
+        if (httpd_query_key_value(query, "baud", val, sizeof(val)) == ESP_OK) {
+            uint32_t b = (uint32_t)strtoul(val, NULL, 10);
+            wtf_sniffer_set_uart_baud(b);
+        }
+        if (httpd_query_key_value(query, "uart_auto", val, sizeof(val)) == ESP_OK) {
+            wtf_sniffer_request_uart_autodetect();
         }
         if (httpd_query_key_value(query, "iris_cmd", val, sizeof(val)) == ESP_OK) {
             if (strcmp(val, "20hz") == 0) {
                 wtf_fuzzer_send_iris_cmd("WTF:CMD:RATE:20HZ");
             } else if (strcmp(val, "2hz") == 0) {
                 wtf_fuzzer_send_iris_cmd("WTF:CMD:RATE:2HZ");
-            } else if (strcmp(val, "ch11") == 0) {
-                wtf_fuzzer_send_iris_cmd("WTF:CMD:CH:11");
-            } else if (strcmp(val, "ch6") == 0) {
-                wtf_fuzzer_send_iris_cmd("WTF:CMD:CH:6");
             }
         }
         if (httpd_query_key_value(query, "ch", val, sizeof(val)) == ESP_OK) {
             int ch = atoi(val);
-            if (ch >= 0 && ch <= 13) {
-                wtf_sniffer_set_wifi_channel((uint8_t)ch);
+            if (ch >= 1 && ch <= 13) {
+                wtf_sniffer_request_wifi_burst((uint8_t)ch);
+            }
+        }
+        if (httpd_query_key_value(query, "wifi_jam", val, sizeof(val)) == ESP_OK) {
+            int ch = atoi(val);
+            if (ch >= 1 && ch <= 13) {
+                wtf_fuzzer_inject_wifi_jam((uint8_t)ch);
             }
         }
         if (httpd_query_key_value(query, "pin", val, sizeof(val)) == ESP_OK) {
@@ -158,7 +177,9 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
             }
         }
         if (httpd_query_key_value(query, "mode", val, sizeof(val)) == ESP_OK) {
-            if (strcasecmp(val, "auto") == 0) {
+            if (strcasecmp(val, "off") == 0) {
+                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_OFF);
+            } else if (strcasecmp(val, "auto") == 0) {
                 wtf_discovery_set_tool_mode(WTF_TOOL_MODE_AUTO);
             } else if (strcasecmp(val, "uart") == 0) {
                 wtf_discovery_set_tool_mode(WTF_TOOL_MODE_UART);
@@ -168,13 +189,7 @@ static esp_err_t cmd_post_handler(httpd_req_t *req)
                 wtf_discovery_set_tool_mode(WTF_TOOL_MODE_WIFI);
             } else if (strcasecmp(val, "zigbee") == 0) {
                 wtf_discovery_set_tool_mode(WTF_TOOL_MODE_ZIGBEE);
-            } else if (strcasecmp(val, "exploit") == 0) {
-                wtf_discovery_set_tool_mode(WTF_TOOL_MODE_EXPLOIT);
             }
-        }
-        if (httpd_query_key_value(query, "lock_disc", val, sizeof(val)) == ESP_OK) {
-            bool lk = (val[0] == '1' || val[0] == 't' || val[0] == 'T');
-            wtf_discovery_set_manual_lock(lk);
         }
         if (httpd_query_key_value(query, "zch", val, sizeof(val)) == ESP_OK) {
             int zch = atoi(val);
@@ -375,16 +390,17 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
         if (strcmp(cmd, "ESTOP") == 0) {
             wtf_safety_abort();
-            wtf_dashboard_broadcast_alert("HARDWARE E-STOP: All probes floated in < 200 ns (FR-7)");
+            wtf_dashboard_broadcast_alert("E-Stop activated: probes High-Z, LEDs off");
+        } else if (strcmp(cmd, "CLEAR") == 0) {
+            wtf_fuzzer_cancel();
+            wtf_sniffer_clear_stats();
+            wtf_dashboard_clear_stats();
         } else if (strcmp(cmd, "FUZZ_UART") == 0) {
             wtf_fuzzer_inject_uart();
-            wtf_dashboard_broadcast_alert("MANUAL FAULT: 10 µs UART Bit Flip on Row 12 (Probe 0)");
         } else if (strcmp(cmd, "FUZZ_I2C_ACK") == 0) {
             wtf_fuzzer_inject_i2c_ack();
-            wtf_dashboard_broadcast_alert("MANUAL FAULT: 50 µs I2C ACK-Kill on Row 43 (Probe 2)");
         } else if (strcmp(cmd, "FUZZ_I2C_STRETCH") == 0) {
             wtf_fuzzer_inject_i2c_stretch();
-            wtf_dashboard_broadcast_alert("MANUAL FAULT: 50 µs I2C Clock Stretch on Row 42 (Probe 3)");
         }
     }
     return ESP_OK;
@@ -396,53 +412,103 @@ static uint32_t s_wifi_cnt    = 0U;
 static uint32_t s_ieee154_cnt = 0U;
 static uint32_t s_fuzz_cnt    = 0U;
 
+EXPORT void wtf_dashboard_clear_stats(void)
+{
+    s_uart_cnt    = 0U;
+    s_i2c_cnt     = 0U;
+    s_wifi_cnt    = 0U;
+    s_ieee154_cnt = 0U;
+    s_fuzz_cnt    = 0U;
+    s_alert_counter = 0U;
+}
+
+static void json_escape_str(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0U) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t o = 0U;
+    for (size_t i = 0U; src[i] != '\0' && o + 2U < dst_sz; i++) {
+        char c = src[i];
+        if (c == '"' || c == '\\') {
+            if (o + 3U >= dst_sz) break;
+            dst[o++] = '\\';
+            dst[o++] = c;
+        } else if ((unsigned char)c >= 32U && (unsigned char)c <= 126U) {
+            dst[o++] = c;
+        } else {
+            dst[o++] = '.';
+        }
+    }
+    dst[o] = '\0';
+}
+
 static int format_telemetry_json(char *json_buf, size_t max_len)
 {
     bool u_lock = wtf_discovery_is_locked(PROTO_UART);
     bool i_lock = wtf_discovery_is_locked(PROTO_I2C);
-    const char *safety_str = wtf_safety_is_aborted() ? "ABORTED" : "ARMED";
+    const char *safety_str = wtf_safety_is_aborted() ? "Stopped" : "Active";
     int uptime_s = (int)(esp_timer_get_time() / 1000000ULL);
     size_t pcap_bytes = wtf_storage_get_pcap_size();
     uint8_t wifi_ch   = wtf_sniffer_get_wifi_channel();
     uint8_t wifi_mode = wtf_sniffer_get_wifi_mode();
     uint8_t zigbee_ch = wtf_sniffer_get_154_channel();
+    uint32_t uart_baud = wtf_sniffer_get_uart_baud();
     const char *tool_mode = wtf_discovery_get_tool_mode_str();
-    bool disc_locked  = wtf_discovery_get_manual_lock();
     int16_t ax = 0, ay = 0, az = 0, mx = 0, my = 0, mz = 0;
     wtf_sniffer_get_i2c_imu(&ax, &ay, &az, &mx, &my, &mz);
 
     int8_t iris_rssi = wtf_sniffer_get_iris_rssi();
     bool iris_verified = wtf_sniffer_is_iris_verified();
 
+    char u_samp[72], w_samp[72], z_samp[72];
+    char u_esc[140], w_esc[140], z_esc[140];
+    char fu[64], fi[64], fw[64], fz[64], fb[64];
+    bool u_clr = false, w_clr = false, z_clr = false;
+    uint8_t w_sch = 6U, imask = 0U, emask = 0U;
+    wtf_sniffer_get_ctf_snapshot(
+        u_samp, sizeof(u_samp), &u_clr,
+        w_samp, sizeof(w_samp), &w_clr, &w_sch,
+        z_samp, sizeof(z_samp), &z_clr,
+        fu, fi, fw, fz, fb, sizeof(fu),
+        &imask, &emask);
+
+    json_escape_str(u_esc, sizeof(u_esc), u_samp);
+    json_escape_str(w_esc, sizeof(w_esc), w_samp);
+    json_escape_str(z_esc, sizeof(z_esc), z_samp);
+
     return snprintf(json_buf, max_len,
                     "{\"type\":\"telemetry\","
                     "\"uart_pkts\":%u,\"i2c_pkts\":%u,\"wifi_pkts\":%u,\"ieee154_pkts\":%u,"
                     "\"fuzz_cycles\":%u,\"corrupted_frames\":%u,"
-                    "\"wifi_ch\":%u,\"wifi_mode\":%u,\"zigbee_ch\":%u,"
-                    "\"tool_mode\":\"%s\",\"disc_locked\":%s,"
-                    "\"safety\":\"%s\","
-                    "\"uart_locked\":%s,\"i2c_locked\":%s,"
-                    "\"pcap_bytes\":%u,"
+                    "\"wifi_ch\":%u,\"wifi_mode\":%u,\"zigbee_ch\":%u,\"uart_baud\":%u,"
+                    "\"tool_mode\":\"%s\",\"safety\":\"%s\","
+                    "\"uart_locked\":%s,\"i2c_locked\":%s,\"pcap_bytes\":%u,"
                     "\"iris_rssi\":%d,\"iris_verified\":%s,"
                     "\"accel\":{\"x\":%d,\"y\":%d,\"z\":%d},"
                     "\"mag\":{\"x\":%d,\"y\":%d,\"z\":%d},"
+                    "\"uart_clear\":%s,\"uart_sample\":\"%s\","
+                    "\"wifi_clear\":%s,\"wifi_sample_ch\":%u,\"wifi_sample\":\"%s\","
+                    "\"z154_clear\":%s,\"z154_sample\":\"%s\","
+                    "\"ctf\":{\"uart\":\"%s\",\"i2c\":\"%s\",\"wifi\":\"%s\",\"zigbee\":\"%s\",\"bonus\":\"%s\",\"imask\":%u,\"emask\":%u},"
                     "\"uptime_s\":%d}",
                     (unsigned)s_uart_cnt, (unsigned)s_i2c_cnt, (unsigned)s_wifi_cnt, (unsigned)s_ieee154_cnt,
                     (unsigned)s_fuzz_cnt, (unsigned)s_fuzz_cnt,
-                    (unsigned)wifi_ch, (unsigned)wifi_mode, (unsigned)zigbee_ch,
-                    tool_mode, disc_locked ? "true" : "false",
-                    safety_str,
-                    u_lock ? "true" : "false", i_lock ? "true" : "false",
-                    (unsigned)pcap_bytes,
+                    (unsigned)wifi_ch, (unsigned)wifi_mode, (unsigned)zigbee_ch, (unsigned)uart_baud,
+                    tool_mode, safety_str,
+                    u_lock ? "true" : "false", i_lock ? "true" : "false", (unsigned)pcap_bytes,
                     (int)iris_rssi, iris_verified ? "true" : "false",
-                    (int)ax, (int)ay, (int)az,
-                    (int)mx, (int)my, (int)mz,
+                    (int)ax, (int)ay, (int)az, (int)mx, (int)my, (int)mz,
+                    u_clr ? "true" : "false", u_esc,
+                    w_clr ? "true" : "false", (unsigned)w_sch, w_esc,
+                    z_clr ? "true" : "false", z_esc,
+                    fu, fi, fw, fz, fb, (unsigned)imask, (unsigned)emask,
                     uptime_s);
+}
 
 static esp_err_t telemetry_get_handler(httpd_req_t *req)
 {
     wtf_sniffer_notify_http_activity();
-    char json_buf[640];
+    char json_buf[1536];
     int len = format_telemetry_json(json_buf, sizeof(json_buf));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -451,11 +517,14 @@ static esp_err_t telemetry_get_handler(httpd_req_t *req)
 
 static void broadcast_telemetry_frame(void)
 {
-    if (!s_http_server) return;
-
-    char json_buf[640];
+    char json_buf[1536];
     int len = format_telemetry_json(json_buf, sizeof(json_buf));
     if (len <= 0) return;
+
+    /* Emit full JSON snapshot for USB-serial bridge */
+    esp_rom_printf("[DASHBOARD:JSON] %s\n", json_buf);
+
+    if (!s_http_server) return;
 
     httpd_ws_frame_t frame = {
         .final = true,
@@ -620,12 +689,22 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
                     s_ieee154_cnt++;
                 } else if (rec.protocol == PROTO_FAULT_ALERT) {
                     s_fuzz_cnt++;
-                    /* Also record fault alert into PCAP storage so client JS dissector sees exact fault timestamp */
                     if (g_mbf_storage > 0) {
                         (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
                     }
-                    /* Immediate alert delivery (< 200 ms, FR-10) */
-                    wtf_dashboard_broadcast_alert("HARDWARE FAULT INJECTED ON BUS (FR-5)");
+                    wtf_dashboard_broadcast_alert("Hardware fault injected on bus");
+                }
+                bool emit_ser = (rec.protocol != PROTO_I2C) || ((s_i2c_cnt % 5U) == 1U) || (rec.length > 10U);
+                if (emit_ser) {
+                    char hex_str[WTF_PKT_DATA_MAX * 2 + 1];
+                    static const char k_hex[] = "0123456789ABCDEF";
+                    uint16_t n = (rec.length <= WTF_PKT_DATA_MAX) ? rec.length : WTF_PKT_DATA_MAX;
+                    for (uint16_t hi = 0; hi < n; hi++) {
+                        hex_str[hi * 2U]      = k_hex[(rec.data[hi] >> 4) & 0x0FU];
+                        hex_str[hi * 2U + 1U] = k_hex[rec.data[hi] & 0x0FU];
+                    }
+                    hex_str[n * 2U] = '\0';
+                    esp_rom_printf("[PCAP:PKT] %u,%u,%s\n", (unsigned)rec.protocol, (unsigned)rec.probe_id, hex_str);
                 }
             }
         }
@@ -637,7 +716,7 @@ EXPORT void wtf_dashboard_task(INT stacd, void *exinf)
         tm_printf((UB *)"[DASHBOARD:2Hz] Telemetry: UART_pkts=%u | I2C_pkts=%u | WiFi_pkts=%u | 802154_pkts=%u | Alerts=%u | Safety=%s\n",
                   (unsigned)s_uart_cnt, (unsigned)s_i2c_cnt, (unsigned)s_wifi_cnt, (unsigned)s_ieee154_cnt,
                   (unsigned)s_fuzz_cnt,
-                  wtf_safety_is_aborted() ? "ABORTED" : "ARMED");
+                  wtf_safety_is_aborted() ? "Stopped" : "Active");
         /* Iris proximity/verified telemetry on same 2 Hz cycle */
         tm_printf((UB *)"[DASHBOARD:2Hz] Iris: RSSI=%d dBm | Verified=%s\n",
                   (int)wtf_sniffer_get_iris_rssi(),

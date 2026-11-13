@@ -17,6 +17,7 @@ extern "C" {
 
 EXPORT void wtf_dashboard_task(INT stacd, void *exinf);
 EXPORT void wtf_dashboard_broadcast_alert(const char *msg);
+EXPORT void wtf_dashboard_clear_stats(void);
 
 #ifdef __cplusplus
 }

@@ -30,9 +30,9 @@
 
 /* Safety Status States */
 typedef enum {
-    WTF_STATE_ARMED       = 0,  /* Green: Armed / Sniffing */
-    WTF_STATE_INJECTING   = 1,  /* Yellow: Fault Injecting */
-    WTF_STATE_ABORTED     = 2   /* Red: E-Stop Aborted */
+    WTF_STATE_ARMED       = 0,  /* Active: Monitoring / Sniffing */
+    WTF_STATE_INJECTING   = 1,  /* Fault Injecting */
+    WTF_STATE_ABORTED     = 2   /* Stopped: Stealth E-Stop (probes High-Z, LEDs off) */
 } wtf_safety_state_t;
 
 /* Decoder Remap Identifiers (FR-3, TC-1.3) */
@@ -61,13 +61,13 @@ typedef enum {
 #define PROTO_WIFI              4
 #define PROTO_IEEE802154        5
 
-/* Selective Tool Engine Modes (Flipper Zero Style Tool Selection & Capture Override) */
-#define WTF_TOOL_MODE_AUTO          0
-#define WTF_TOOL_MODE_UART          1
-#define WTF_TOOL_MODE_I2C           2
-#define WTF_TOOL_MODE_WIFI          3
-#define WTF_TOOL_MODE_ZIGBEE        4
-#define WTF_TOOL_MODE_EXPLOIT       5
+/* Selective Tool Engine Modes */
+#define WTF_TOOL_MODE_OFF           0
+#define WTF_TOOL_MODE_AUTO          1
+#define WTF_TOOL_MODE_UART          2
+#define WTF_TOOL_MODE_I2C           3
+#define WTF_TOOL_MODE_WIFI          4
+#define WTF_TOOL_MODE_ZIGBEE        5
 
 /* Event Flag Bits */
 #define FLG_BIT_SAFETY_ABORT    (1 << 0)
@@ -75,8 +75,7 @@ typedef enum {
 #define FLG_BIT_I2C_LOCKED      (1 << 2)
 
 /* Packet Record Structure */
-#define WTF_PKT_DATA_MAX        64
-
+#define WTF_PKT_DATA_MAX        128
 typedef struct {
     uint32_t timestamp_us;
     uint8_t protocol;

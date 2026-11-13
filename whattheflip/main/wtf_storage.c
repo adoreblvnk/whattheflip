@@ -7,6 +7,7 @@
  */
 
 #include "wtf_storage.h"
+#include "wtf_safety.h"
 #include "dashboard_html.h"
 #include "soc/gpio_struct.h"
 #include "driver/gpio.h"
@@ -891,7 +892,7 @@ EXPORT void wtf_storage_task(INT stacd, void *exinf)
 
             /* Flush complete 512-byte sectors to MicroSD */
             while ((s_buf_write_pos - s_buf_flushed_pos) >= 512U) {
-                if (s_fat.mounted) {
+                if (s_fat.mounted && !wtf_safety_is_aborted()) {
                     uint32_t lba = clus_to_lba(s_fat.file_curr_clus) + s_fat.file_clus_sec_idx;
                     bool ok = sd_write_sector(lba, &s_pcap_buf[s_buf_flushed_pos]);
                     if (ok) {
@@ -916,10 +917,9 @@ EXPORT void wtf_storage_task(INT stacd, void *exinf)
             }
         } else {
             /* Queue idle: flush partial sector to disk and update directory file size */
-            if (s_fat.mounted && (s_buf_write_pos > s_buf_flushed_pos)) {
+            if (s_fat.mounted && !wtf_safety_is_aborted() && (s_buf_write_pos > s_buf_flushed_pos)) {
                 uint32_t unflushed = s_buf_write_pos - s_buf_flushed_pos;
                 if (unflushed < 512U) {
-                    memset(s_sector_scratch, 0, 512);
                     memcpy(s_sector_scratch, &s_pcap_buf[s_buf_flushed_pos], unflushed);
                     uint32_t lba = clus_to_lba(s_fat.file_curr_clus) + s_fat.file_clus_sec_idx;
                     (void)sd_write_sector(lba, s_sector_scratch);

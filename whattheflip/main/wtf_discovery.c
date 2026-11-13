@@ -21,8 +21,7 @@
 static bool s_uart_locked = false;
 static bool s_i2c_locked  = false;
 static bool s_manual_lock = false;
-static uint8_t s_tool_mode = WTF_TOOL_MODE_AUTO;
-
+static uint8_t s_tool_mode = WTF_TOOL_MODE_OFF;
 EXPORT void wtf_discovery_set_manual_lock(bool locked)
 {
     s_manual_lock = locked;
@@ -37,40 +36,41 @@ EXPORT bool wtf_discovery_get_manual_lock(void)
 
 EXPORT void wtf_discovery_set_tool_mode(uint8_t mode)
 {
-    if (mode > WTF_TOOL_MODE_EXPLOIT) {
+    if (mode > WTF_TOOL_MODE_ZIGBEE) {
         return;
     }
     s_tool_mode = mode;
 
-    if (mode != WTF_TOOL_MODE_AUTO) {
-        s_manual_lock = true; /* Selecting a specific tool engages manual capture override */
-    }
-
     switch (mode) {
+        case WTF_TOOL_MODE_OFF:
+            s_manual_lock = true;
+            tm_printf((UB *)"[DISCOVERY] MODE: OFF (Idle standby)\n");
+            break;
         case WTF_TOOL_MODE_UART:
+            s_manual_lock = true;
             (void)wtf_discovery_remap_probe(WTF_PIN_PROBE1_SNIFF, WTF_DECODER_UART1_RX);
             s_uart_locked = true;
-            tm_printf((UB *)"[DISCOVERY] TOOL OVERRIDE: Locked to UART Protocol Analyzer & Glitcher\n");
+            tm_printf((UB *)"[DISCOVERY] MODE: UART Protocol Analyzer\n");
             break;
         case WTF_TOOL_MODE_I2C:
+            s_manual_lock = true;
             (void)wtf_discovery_remap_probe(WTF_PIN_PROBE2_SDA, WTF_DECODER_I2C0_EXT);
             (void)wtf_discovery_remap_probe(WTF_PIN_PROBE3_SCL, WTF_DECODER_I2C0_EXT);
             s_i2c_locked = true;
-            tm_printf((UB *)"[DISCOVERY] TOOL OVERRIDE: Locked to I2C Protocol Analyzer & Hijacker\n");
+            tm_printf((UB *)"[DISCOVERY] MODE: I2C Protocol Analyzer\n");
             break;
         case WTF_TOOL_MODE_WIFI:
-            tm_printf((UB *)"[DISCOVERY] TOOL OVERRIDE: Locked to Wi-Fi 6 802.11 Monitor\n");
+            s_manual_lock = true;
+            tm_printf((UB *)"[DISCOVERY] MODE: Wi-Fi 6 802.11 Monitor\n");
             break;
         case WTF_TOOL_MODE_ZIGBEE:
-            tm_printf((UB *)"[DISCOVERY] TOOL OVERRIDE: Locked to Zigbee IEEE 802.15.4 Sniffer\n");
-            break;
-        case WTF_TOOL_MODE_EXPLOIT:
-            tm_printf((UB *)"[DISCOVERY] TOOL OVERRIDE: Armed Active Exploit & Glitch Suite\n");
+            s_manual_lock = true;
+            tm_printf((UB *)"[DISCOVERY] MODE: Zigbee IEEE 802.15.4 Sniffer\n");
             break;
         case WTF_TOOL_MODE_AUTO:
         default:
             s_manual_lock = false;
-            tm_printf((UB *)"[DISCOVERY] TOOL OVERRIDE: Restored to Auto-Discovery\n");
+            tm_printf((UB *)"[DISCOVERY] MODE: AUTO (Auto-Discovery Active)\n");
             break;
     }
 }
@@ -87,9 +87,9 @@ EXPORT const char *wtf_discovery_get_tool_mode_str(void)
         case WTF_TOOL_MODE_I2C:     return "I2C";
         case WTF_TOOL_MODE_WIFI:    return "WIFI";
         case WTF_TOOL_MODE_ZIGBEE:  return "ZIGBEE";
-        case WTF_TOOL_MODE_EXPLOIT: return "EXPLOIT";
-        case WTF_TOOL_MODE_AUTO:
-        default:                    return "AUTO";
+        case WTF_TOOL_MODE_AUTO:    return "AUTO";
+        case WTF_TOOL_MODE_OFF:
+        default:                    return "OFF";
     }
 }
 
@@ -125,13 +125,18 @@ EXPORT ER wtf_discovery_remap_probe(uint8_t probe_pin, uint8_t decoder_id)
         return E_PAR;
     }
 
+    uint8_t probe_idx = probe_pin - WTF_PIN_PROBE0_GLITCH;
+    if (s_probe_decoder_map[probe_idx] == decoder_id) {
+        return E_OK; /* Already mapped; preserve active sniffer IRAM interrupts */
+    }
+
     int64_t t_start = esp_timer_get_time();
 
-    /* 1. Configure the probe pin as high-Z peripheral input */
+    /* 1. Configure the probe pin as high-Z peripheral input (no pull-up so Maker Pi blue LED stays off) */
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << probe_pin),
         .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = (decoder_id == WTF_DECODER_UART1_RX) ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
@@ -162,7 +167,6 @@ EXPORT ER wtf_discovery_remap_probe(uint8_t probe_pin, uint8_t decoder_id)
     esp_rom_gpio_connect_in_signal(probe_pin, sig_idx, false);
 
     /* 4. Update remapping table */
-    uint8_t probe_idx = probe_pin - WTF_PIN_PROBE0_GLITCH;
     s_probe_decoder_map[probe_idx] = decoder_id;
 
     int64_t elapsed_us = esp_timer_get_time() - t_start;
@@ -219,11 +223,10 @@ EXPORT void wtf_discovery_task(INT stacd, void *exinf)
     tm_printf((UB *)"[DISCOVERY] TSK_DISCOVERY online: Monitoring probes for edge rhythms (FR-2)\n");
 
     while (!s_uart_locked || !s_i2c_locked) {
-        if (s_manual_lock) {
+        if (s_tool_mode == WTF_TOOL_MODE_OFF || s_manual_lock) {
             tk_dly_tsk(50);
             continue;
         }
-        /* 1. Check UART1 Hardware Autobaud & RX FIFO status registers */
         if (!s_uart_locked) {
             uint32_t rxd_edges = UART1.rxd_cnt.rxd_edge_cnt;
             uint32_t rx_bytes  = UART1.status.rxfifo_cnt;

@@ -15,144 +15,26 @@
 #include "esp_rom_sys.h"
 #include "esp_rom_serial_output.h"
 #include "wtf_fuzzer.h"
+#include "wtf_sniffer.h"
+#include "wtf_discovery.h"
+#include "wtf_dashboard.h"
+#include <string.h>
+#include <stdlib.h>
 
 static volatile bool s_safety_latched = false;
 static wtf_safety_state_t s_safety_state = WTF_STATE_ARMED;
-
-/* TCA9554 Cached Register States */
-static uint8_t s_tca_config = 0xFF; /* Default all inputs */
-static uint8_t s_tca_output = 0x00; /* Default all low */
-
 /* --------------------------------------------------------------------------
- * TCA9554PWR Bitbang I2C Driver for Piezo Buzzer (EXIO3 on GPIO22/GPIO23)
+ * Hardware Pinout Note (ESP32-C6-Pico on Maker Pi Base)
+ * Only blue GPIO indicator LEDs and jumpered microSD (GPIO18..21) work on
+ * whattheflip; the piezo buzzer is driven directly by Daphne on GP18.
  * -------------------------------------------------------------------------- */
-
-static inline void tca_i2c_delay(void)
-{
-    esp_rom_delay_us(2); /* ~250 kHz I2C clock */
-}
-
-static inline void tca_sda_set(int high)
-{
-    if (high) {
-        GPIO.enable_w1tc.val = (1UL << WTF_PIN_TCA9554_SDA); /* Float / pulled high */
-    } else {
-        GPIO.out_w1tc.val = (1UL << WTF_PIN_TCA9554_SDA);
-        GPIO.enable_w1ts.val = (1UL << WTF_PIN_TCA9554_SDA); /* Drive LOW */
-    }
-}
-
-static inline void tca_scl_set(int high)
-{
-    if (high) {
-        GPIO.enable_w1tc.val = (1UL << WTF_PIN_TCA9554_SCL); /* Float */
-    } else {
-        GPIO.out_w1tc.val = (1UL << WTF_PIN_TCA9554_SCL);
-        GPIO.enable_w1ts.val = (1UL << WTF_PIN_TCA9554_SCL); /* Drive LOW */
-    }
-}
-
-static inline int tca_sda_get(void)
-{
-    return (int)((GPIO.in.val >> WTF_PIN_TCA9554_SDA) & 1UL);
-}
-
-static void tca_i2c_start(void)
-{
-    tca_sda_set(1);
-    tca_scl_set(1);
-    tca_i2c_delay();
-    tca_sda_set(0);
-    tca_i2c_delay();
-    tca_scl_set(0);
-    tca_i2c_delay();
-}
-
-static void tca_i2c_stop(void)
-{
-    tca_sda_set(0);
-    tca_scl_set(0);
-    tca_i2c_delay();
-    tca_scl_set(1);
-    tca_i2c_delay();
-    tca_sda_set(1);
-    tca_i2c_delay();
-}
-
-static bool tca_i2c_write_byte(uint8_t byte)
-{
-    for (int i = 7; i >= 0; i--) {
-        tca_sda_set((byte >> i) & 1U);
-        tca_i2c_delay();
-        tca_scl_set(1);
-        tca_i2c_delay();
-        tca_scl_set(0);
-    }
-    /* Read ACK */
-    tca_sda_set(1);
-    tca_i2c_delay();
-    tca_scl_set(1);
-    tca_i2c_delay();
-    bool ack = (tca_sda_get() == 0);
-    tca_scl_set(0);
-    tca_i2c_delay();
-    return ack;
-}
-
-static bool tca9554_write_reg(uint8_t reg, uint8_t val)
-{
-    tca_i2c_start();
-    if (!tca_i2c_write_byte(0x40)) { /* Address 0x20 << 1 | WRITE */
-        tca_i2c_stop();
-        return false;
-    }
-    if (!tca_i2c_write_byte(reg)) {
-        tca_i2c_stop();
-        return false;
-    }
-    if (!tca_i2c_write_byte(val)) {
-        tca_i2c_stop();
-        return false;
-    }
-    tca_i2c_stop();
-    return true;
-}
-
-static void tca9554_buzzer_hw_init(void)
-{
-    /* Configure SDA (GPIO22) and SCL (GPIO23) as open-drain outputs with pull-ups */
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << WTF_PIN_TCA9554_SDA) | (1ULL << WTF_PIN_TCA9554_SCL),
-        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
-
-    /* Float SDA and SCL high */
-    tca_sda_set(1);
-    tca_scl_set(1);
-    esp_rom_delay_us(10);
-
-    /* Configure EXIO3 as output (Register 0x03, bit 3 = 0) */
-    s_tca_config &= ~(1U << WTF_EXIO_BUZZER);
-    (void)tca9554_write_reg(0x03, s_tca_config);
-
-    /* Ensure buzzer output initially low (Register 0x01, bit 3 = 0) */
-    s_tca_output &= ~(1U << WTF_EXIO_BUZZER);
-    (void)tca9554_write_reg(0x01, s_tca_output);
-}
 
 EXPORT void wtf_safety_chirp_buzzer(uint32_t duration_ms)
 {
     if (duration_ms == 0) {
         duration_ms = 20;
     }
-    /* Acoustic tone is generated directly on Daphne's native GP18.
-     * whattheflip emits the alert telemetry event to WebSocket and console.
-     */
-    tm_printf((UB *)"[SAFETY] Buzzer: Alert chirp emitted (%lu ms)\n", (unsigned long)duration_ms);
+    tm_printf((UB *)"[SAFETY] Alert logged (%lu ms; piezo alarm is on Daphne GP18)\n", (unsigned long)duration_ms);
 }
 
 /* --------------------------------------------------------------------------
@@ -209,22 +91,55 @@ EXPORT void wtf_safety_neopixel_set_color(uint8_t r, uint8_t g, uint8_t b)
     esp_rom_delay_us(80);
 }
 
+static void safety_apply_stealth_leds(bool stealth)
+{
+    /* Float Probes 0..3 (GPIO4..7) without pull-ups so blue GPIO indicator LEDs turn completely off */
+    if (stealth) {
+        GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
+                               (1UL << WTF_PIN_PROBE1_SNIFF)  |
+                               (1UL << WTF_PIN_PROBE2_SDA)    |
+                               (1UL << WTF_PIN_PROBE3_SCL)    |
+                               (1UL << WTF_PIN_SD_SCK)        |
+                               (1UL << WTF_PIN_SD_MOSI)       |
+                               (1UL << WTF_PIN_SD_CS)         |
+                               (1UL << WTF_PIN_TCA9554_SDA)   |
+                               (1UL << WTF_PIN_TCA9554_SCL);
+        static const uint8_t k_stealth_pins[] = {
+            0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+        };
+        for (size_t i = 0; i < sizeof(k_stealth_pins); i++) {
+            gpio_num_t p = (gpio_num_t)k_stealth_pins[i];
+            gpio_set_direction(p, GPIO_MODE_INPUT);
+            gpio_pullup_dis(p);
+            gpio_pulldown_dis(p);
+        }
+        /* Drive NeoPixel data line LOW after sending (0,0,0) */
+        wtf_safety_neopixel_set_color(0, 0, 0);
+        GPIO.out_w1tc.val = (1UL << WTF_PIN_NEOPIXEL);
+    } else {
+        /* Restore SD SPI pins when leaving stealth mode */
+        gpio_set_direction((gpio_num_t)WTF_PIN_SD_CS, GPIO_MODE_OUTPUT);
+        gpio_set_direction((gpio_num_t)WTF_PIN_SD_SCK, GPIO_MODE_OUTPUT);
+        gpio_set_direction((gpio_num_t)WTF_PIN_SD_MOSI, GPIO_MODE_OUTPUT);
+        GPIO.out_w1ts.val = (1UL << WTF_PIN_SD_CS) | (1UL << WTF_PIN_SD_MOSI);
+        GPIO.out_w1tc.val = (1UL << WTF_PIN_SD_SCK);
+    }
+}
+
 EXPORT void wtf_safety_set_state(wtf_safety_state_t state)
 {
     s_safety_state = state;
 
     switch (state) {
         case WTF_STATE_ARMED:
-            /* Green: Armed / Sniffing */
             wtf_safety_neopixel_set_color(0, 48, 0);
             break;
         case WTF_STATE_INJECTING:
-            /* Yellow: Fault Injecting (Red + Green) */
             wtf_safety_neopixel_set_color(48, 36, 0);
             break;
         case WTF_STATE_ABORTED:
-            /* Red: E-Stop Aborted */
-            wtf_safety_neopixel_set_color(64, 0, 0);
+            /* Stealth mode: turn off NeoPixel and all blue GPIO indicator LEDs */
+            safety_apply_stealth_leds(true);
             break;
         default:
             break;
@@ -279,9 +194,7 @@ EXPORT void wtf_safety_hw_init(void)
     gpio_config(&led_conf);
     GPIO.out_w1tc.val = (1UL << WTF_PIN_NEOPIXEL);
 
-    /* Initialize Buzzer over TCA9554 */
-    tca9554_buzzer_hw_init();
-
+    /* Maker Pi buttons/expander lines remain high-Z inputs */
     gpio_install_isr_service(0);
     gpio_isr_handler_add(WTF_PIN_ESTOP, estop_gpio_isr, NULL);
 }
@@ -293,13 +206,15 @@ EXPORT bool wtf_safety_is_aborted(void)
 
 EXPORT void wtf_safety_abort(void)
 {
-    /* 1. Float all probes in < 200 ns */
+    /* 1. Float all probes in < 200 ns and cancel any active glitching */
     GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
                            (1UL << WTF_PIN_PROBE1_SNIFF)  |
                            (1UL << WTF_PIN_PROBE2_SDA)    |
                            (1UL << WTF_PIN_PROBE3_SCL);
 
     s_safety_latched = true;
+    wtf_fuzzer_cancel();
+    safety_apply_stealth_leds(true);
 
     /* 2. Signal safety task */
     if (g_flg_system > 0) {
@@ -313,8 +228,45 @@ EXPORT void wtf_safety_rearm(void)
     if (g_flg_system > 0) {
         (void)tk_clr_flg(g_flg_system, ~FLG_BIT_SAFETY_ABORT);
     }
+    safety_apply_stealth_leds(false);
     wtf_safety_set_state(WTF_STATE_ARMED);
-    tm_printf((UB *)"[SAFETY] SYSTEM RE-ARMED: Probes restored, monitoring resumed\n");
+    tm_printf((UB *)"[SAFETY] SYSTEM ACTIVE: Probes restored, monitoring resumed\n");
+}
+
+static void safety_handle_serial_line(const char *line)
+{
+    tm_printf((UB *)"[SAFETY:CMD] '%s'\n", line);
+    if (strncmp(line, "MODE:", 5) == 0) {
+        const char *m = line + 5;
+        if (strcasecmp(m, "off") == 0) wtf_discovery_set_tool_mode(WTF_TOOL_MODE_OFF);
+        else if (strcasecmp(m, "auto") == 0) wtf_discovery_set_tool_mode(WTF_TOOL_MODE_AUTO);
+        else if (strcasecmp(m, "uart") == 0) wtf_discovery_set_tool_mode(WTF_TOOL_MODE_UART);
+        else if (strcasecmp(m, "i2c") == 0) wtf_discovery_set_tool_mode(WTF_TOOL_MODE_I2C);
+        else if (strcasecmp(m, "wifi") == 0) wtf_discovery_set_tool_mode(WTF_TOOL_MODE_WIFI);
+        else if (strcasecmp(m, "zigbee") == 0) wtf_discovery_set_tool_mode(WTF_TOOL_MODE_ZIGBEE);
+    } else if (strcmp(line, "BAUD:AUTO") == 0 || strcmp(line, "UARTAUTO") == 0) {
+        wtf_sniffer_request_uart_autodetect();
+    } else if (strncmp(line, "BAUD:", 5) == 0) {
+        uint32_t b = (uint32_t)strtoul(line + 5, NULL, 10);
+        wtf_sniffer_set_uart_baud(b);
+    } else if (strncmp(line, "CH", 2) == 0) {
+        int ch = atoi(line + 2);
+        if (ch >= 1 && ch <= 13) wtf_sniffer_request_wifi_burst((uint8_t)ch);
+    } else if (strncmp(line, "JAMWIFI:", 8) == 0) {
+        int ch = atoi(line + 8);
+        if (ch >= 1 && ch <= 13) wtf_fuzzer_inject_wifi_jam((uint8_t)ch);
+    } else if (strncmp(line, "ZCH", 3) == 0) {
+        int zch = atoi(line + 3);
+        if (zch >= 11 && zch <= 26) wtf_sniffer_set_154_channel((uint8_t)zch);
+    } else if (strcmp(line, "CLEAR") == 0) {
+        wtf_fuzzer_cancel();
+        wtf_sniffer_clear_stats();
+        wtf_dashboard_clear_stats();
+    } else if (strcmp(line, "ESTOP") == 0) {
+        wtf_safety_abort();
+    } else if (strcmp(line, "REARM") == 0) {
+        wtf_safety_rearm();
+    }
 }
 
 EXPORT void wtf_safety_task(INT stacd, void *exinf)
@@ -326,53 +278,76 @@ EXPORT void wtf_safety_task(INT stacd, void *exinf)
     wtf_safety_set_state(WTF_STATE_ARMED);
 
     tm_printf((UB *)"[SAFETY] TSK_SAFETY online: E-stop monitored on GPIO9 (200 ns gate)\n");
-    tm_printf((UB *)"[SAFETY] Status LED: GREEN (Armed/Sniffing)\n");
+
+    char ser_line[48];
+    int ser_idx = 0;
 
     for (;;) {
         UINT flgptn = 0;
         ER er = tk_wai_flg(g_flg_system, FLG_BIT_SAFETY_ABORT,
                            TWF_ANDW | TWF_CLR, &flgptn, 50);
         uint8_t rx_char = 0;
-        bool has_char = false;
-        if ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) != 0) {
-            rx_char = (uint8_t)(REG_READ(USB_SERIAL_JTAG_EP1_REG) & 0xFF);
-            has_char = true;
-        } else if (esp_rom_output_rx_one_char(&rx_char) == 0) {
-            has_char = true;
-        }
-
-        if (has_char) {
-            if (rx_char == 'E' || rx_char == 'e') {
-                wtf_safety_abort();
-            } else if (rx_char == 'U' || rx_char == 'u') {
-                wtf_fuzzer_inject_uart();
-            } else if (rx_char == 'A' || rx_char == 'a') {
-                wtf_fuzzer_inject_i2c_ack();
-            } else if (rx_char == 'S' || rx_char == 's') {
-                wtf_fuzzer_inject_i2c_stretch();
-            } else if (rx_char == 'W' || rx_char == 'w') {
-                wtf_fuzzer_inject_wireless_jam();
-            } else if (rx_char == 'R' || rx_char == 'r') {
-                wtf_safety_rearm();
+        while ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) != 0 ||
+               esp_rom_output_rx_one_char(&rx_char) == 0) {
+            if ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) != 0) {
+                rx_char = (uint8_t)(REG_READ(USB_SERIAL_JTAG_EP1_REG) & 0xFF);
+            }
+            if (rx_char == '\n' || rx_char == '\r') {
+                if (ser_idx == 1) {
+                    char c = ser_line[0];
+                    if (c == 'E' || c == 'e') wtf_safety_abort();
+                    else if (c == 'R' || c == 'r') wtf_safety_rearm();
+                    else if (c == 'C' || c == 'c') {
+                        wtf_fuzzer_cancel();
+                        wtf_sniffer_clear_stats();
+                        wtf_dashboard_clear_stats();
+                    }
+                    else if (c == 'U' || c == 'u') wtf_fuzzer_inject_uart();
+                    else if (c == 'A' || c == 'a') wtf_fuzzer_inject_i2c_ack();
+                    else if (c == 'S' || c == 's') wtf_fuzzer_inject_i2c_stretch();
+                    else if (c == 'W' || c == 'w') wtf_fuzzer_inject_wireless_jam();
+                    else if (c == 'J' || c == 'j') wtf_fuzzer_inject_wifi_jam(wtf_sniffer_get_wifi_channel());
+                } else if (ser_idx > 1) {
+                    ser_line[ser_idx] = '\0';
+                    safety_handle_serial_line(ser_line);
+                }
+                ser_idx = 0;
+            } else if (ser_idx < (int)(sizeof(ser_line) - 1)) {
+                ser_line[ser_idx++] = (char)rx_char;
+            } else {
+                ser_idx = 0;
             }
         }
-
+        /* Bare single-char trigger only if not followed by another byte within 20 ms */
+        if (ser_idx == 1) {
+            tk_dly_tsk(20);
+            if ((REG_READ(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL) == 0) {
+                char c = ser_line[0];
+                if (c == 'E' || c == 'e' || c == 'R' || c == 'r' || c == 'C' || c == 'c' ||
+                    c == 'U' || c == 'u' || c == 'A' || c == 'a' || c == 'S' || c == 's' ||
+                    c == 'W' || c == 'w' || c == 'J' || c == 'j') {
+                    if (c == 'E' || c == 'e') wtf_safety_abort();
+                    else if (c == 'R' || c == 'r') wtf_safety_rearm();
+                    else if (c == 'C' || c == 'c') {
+                        wtf_fuzzer_cancel();
+                        wtf_sniffer_clear_stats();
+                        wtf_dashboard_clear_stats();
+                    }
+                    else if (c == 'U' || c == 'u') wtf_fuzzer_inject_uart();
+                    else if (c == 'A' || c == 'a') wtf_fuzzer_inject_i2c_ack();
+                    else if (c == 'S' || c == 's') wtf_fuzzer_inject_i2c_stretch();
+                    else if (c == 'W' || c == 'w') wtf_fuzzer_inject_wireless_jam();
+                    else if (c == 'J' || c == 'j') wtf_fuzzer_inject_wifi_jam(wtf_sniffer_get_wifi_channel());
+                    ser_idx = 0;
+                }
+            }
+        }
         if (er == E_OK && (flgptn & FLG_BIT_SAFETY_ABORT)) {
-            tm_printf((UB *)"[SAFETY:ALERT] HARDWARE E-STOP ACTIVATED!\n");
-            tm_printf((UB *)"[SAFETY:ALERT] All probes (GPIO4..7) floated in < 200 ns.\n");
-            tm_printf((UB *)"[SAFETY:ALERT] System halted into safe idle state.\n");
-            tm_printf((UB *)"[SAFETY] Status LED: RED (Aborted)\n");
-            tm_printf((UB *)"[SAFETY] Buzzer: Alert chirp emitted\n");
-            tm_printf((UB *)"***************************************************\n");
-
+            tm_printf((UB *)"[SAFETY:ALERT] HARDWARE E-STOP ACTIVATED (Stealth Mode: LEDs OFF, Probes High-Z)!\n");
             wtf_safety_set_state(WTF_STATE_ABORTED);
-            wtf_safety_chirp_buzzer(200);
-
-            /* Invariant: Tasks settle within 5 ms */
             tk_dly_tsk(5);
 
             while (s_safety_latched) {
-                /* Float continuously */
                 GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
                                        (1UL << WTF_PIN_PROBE1_SNIFF)  |
                                        (1UL << WTF_PIN_PROBE2_SDA)    |

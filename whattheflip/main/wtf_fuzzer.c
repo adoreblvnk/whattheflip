@@ -12,6 +12,7 @@
 
 #include "wtf_fuzzer.h"
 #include "wtf_safety.h"
+#include "wtf_sniffer.h"
 #include "soc/gpio_struct.h"
 #include "soc/gpio_sig_map.h"
 #include "soc/uart_struct.h"
@@ -20,13 +21,16 @@
 #include "esp_rom_gpio.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
+#include "esp_now.h"
 #include "esp_ieee802154.h"
 #include <string.h>
 
 /* Fixed Iris Target Address (FR-6 Invariant: Never Broadcast) */
 static const uint8_t s_iris_target_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
 static const uint16_t s_iris_target_short = 0x0003;
-
+static volatile bool s_fuzzer_cancelled   = false;
+static bool s_wtf_espnow_ready            = false;
 static void fuzzer_hw_init(void)
 {
     /* Keep Probes 0, 2, and 3 in high-Z mode during idle */
@@ -118,7 +122,7 @@ EXPORT void inject_wireless_target_jam_50us(void)
     }
 
     uint8_t jam_frame[32];
-    uint8_t psdu_len = 22;
+    uint8_t psdu_len = 28U + 2U; /* 9B MHR + 19B payload + 2B FCS */
     jam_frame[0] = psdu_len;
     jam_frame[1] = 0x41; /* FCF LSB: Data frame, PAN ID comp */
     jam_frame[2] = 0x88; /* FCF MSB: Short dest, short src */
@@ -131,8 +135,26 @@ EXPORT void inject_wireless_target_jam_50us(void)
     jam_frame[9] = 0x00;
     memcpy(&jam_frame[10], "WTF:JAM:TARGET:IRIS", 19);
 
-    /* Transmit targeted burst on Channel 15 */
+    /* Transmit targeted burst on currently active 802.15.4 channel */
     (void)esp_ieee802154_transmit(jam_frame, false);
+}
+
+EXPORT void wtf_fuzzer_cancel(void)
+{
+    s_fuzzer_cancelled = true;
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE0_GLITCH, SIG_GPIO_OUT_IDX, false, true);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE2_SDA, SIG_GPIO_OUT_IDX, false, true);
+    esp_rom_gpio_connect_out_signal(WTF_PIN_PROBE3_SCL, SIG_GPIO_OUT_IDX, false, true);
+    GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) |
+                           (1UL << WTF_PIN_PROBE2_SDA)    |
+                           (1UL << WTF_PIN_PROBE3_SCL);
+    I2C0.ctr.sda_force_out = 0U;
+    I2C0.ctr.scl_force_out = 0U;
+    I2C0.scl_sp_conf.scl_pd_en = 0U;
+    I2C0.ctr.conf_upgate = 1U;
+    if (!wtf_safety_is_aborted()) {
+        wtf_safety_set_state(WTF_STATE_ARMED);
+    }
 }
 
 EXPORT void wtf_fuzzer_inject_uart(void)
@@ -140,33 +162,43 @@ EXPORT void wtf_fuzzer_inject_uart(void)
     if (wtf_safety_is_aborted()) {
         return;
     }
+    s_fuzzer_cancelled = false;
 
     if (g_mtx_probe_access > 0) {
         (void)tk_loc_mtx(g_mtx_probe_access, TMO_FEVR);
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
-    /* Synchronize to active UART frame using UART1 Hardware Status Register (`UART1.status.rxd`) */
+    /* Synchronize to active UART frame using UART1 Hardware Status Register */
     uint32_t t_wait = 0U;
-    while (UART1.status.rxd != 0U && t_wait < 550000U) {
+    while (UART1.status.rxd != 0U && t_wait < 550000U && !wtf_safety_is_aborted() && !s_fuzzer_cancelled) {
         esp_rom_delay_us(5);
         t_wait += 5U;
     }
-    esp_rom_delay_us(25); /* Advance into payload data bit cell */
-    inject_uart_bit_flip_10us();
-    wtf_safety_chirp_buzzer(20);
-    tk_dly_tsk(150); /* Visible LED hold */
-    wtf_safety_set_state(WTF_STATE_ARMED);
-    tm_printf((UB *)"[FUZZER] MANUAL INJECT: 10 µs UART bit flip on Row 12 (Probe 0)\n");
-
-    if (g_mbf_telemetry > 0) {
-        wtf_record_t alert_rec;
-        alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
-        alert_rec.protocol = PROTO_FAULT_ALERT;
-        alert_rec.probe_id = 0;
-        alert_rec.length = 0;
-        (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+    if (!wtf_safety_is_aborted() && !s_fuzzer_cancelled) {
+        uint32_t baud = wtf_sniffer_get_uart_baud();
+        uint32_t offset_us = (baud == 9600U) ? 240U : (baud == 38400U) ? 75U : (baud == 57600U) ? 50U : 25U;
+        esp_rom_delay_us(offset_us);
+        inject_uart_bit_flip_10us();
+        wtf_sniffer_mark_exploit(PROTO_UART);
+        wtf_safety_chirp_buzzer(20);
+        for (int i = 0; i < 15 && !wtf_safety_is_aborted() && !s_fuzzer_cancelled; i++) {
+            tk_dly_tsk(10);
+        }
+        if (g_mbf_telemetry > 0) {
+            wtf_record_t alert_rec;
+            alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
+            alert_rec.protocol = PROTO_FAULT_ALERT;
+            alert_rec.probe_id = 0;
+            alert_rec.length = 0;
+            (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+        }
     }
+    if (!wtf_safety_is_aborted()) {
+        wtf_safety_set_state(WTF_STATE_ARMED);
+    }
+    tm_printf((UB *)"[FUZZER] MANUAL INJECT: 10 us UART bit flip (Probe 0)\n");
+
     if (g_mtx_probe_access > 0) {
         (void)tk_unl_mtx(g_mtx_probe_access);
     }
@@ -177,35 +209,42 @@ EXPORT void wtf_fuzzer_inject_i2c_ack(void)
     if (wtf_safety_is_aborted()) {
         return;
     }
+    s_fuzzer_cancelled = false;
 
     if (g_mtx_probe_access > 0) {
         (void)tk_loc_mtx(g_mtx_probe_access, TMO_FEVR);
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
-    /* Synchronize to I2C address/ACK window via I2C0 Hardware Controller Status (`I2C0.sr` & `I2C0.int_raw`) */
     I2C0.int_clr.det_start_int_clr = 1U;
     uint32_t t_wait = 0U;
-    while (I2C0.int_raw.det_start_int_raw == 0U && I2C0.sr.bus_busy == 0U && t_wait < 250000U) {
+    while (I2C0.int_raw.det_start_int_raw == 0U && I2C0.sr.bus_busy == 0U &&
+           t_wait < 250000U && !wtf_safety_is_aborted() && !s_fuzzer_cancelled) {
         esp_rom_delay_us(2);
         t_wait += 2U;
     }
-    /* Wait 8 clock cycles at 400 kHz (~20 µs) to hit the 9th-clock ACK slot */
-    esp_rom_delay_us(20);
-    inject_i2c_ack_kill_50us();
-    wtf_safety_chirp_buzzer(20);
-    tk_dly_tsk(150); /* Visible LED hold */
-    wtf_safety_set_state(WTF_STATE_ARMED);
-    tm_printf((UB *)"[FUZZER] MANUAL INJECT: 50 µs I2C ACK-kill on Row 43 (Probe 2)\n");
-
-    if (g_mbf_telemetry > 0) {
-        wtf_record_t alert_rec;
-        alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
-        alert_rec.protocol = PROTO_FAULT_ALERT;
-        alert_rec.probe_id = 2;
-        alert_rec.length = 0;
-        (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+    if (!wtf_safety_is_aborted() && !s_fuzzer_cancelled) {
+        esp_rom_delay_us(20);
+        inject_i2c_ack_kill_50us();
+        wtf_sniffer_mark_exploit(PROTO_I2C);
+        wtf_safety_chirp_buzzer(20);
+        for (int i = 0; i < 15 && !wtf_safety_is_aborted() && !s_fuzzer_cancelled; i++) {
+            tk_dly_tsk(10);
+        }
+        if (g_mbf_telemetry > 0) {
+            wtf_record_t alert_rec;
+            alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
+            alert_rec.protocol = PROTO_FAULT_ALERT;
+            alert_rec.probe_id = 2;
+            alert_rec.length = 0;
+            (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+        }
     }
+    if (!wtf_safety_is_aborted()) {
+        wtf_safety_set_state(WTF_STATE_ARMED);
+    }
+    tm_printf((UB *)"[FUZZER] MANUAL INJECT: 50 us I2C ACK-kill (Probe 2)\n");
+
     if (g_mtx_probe_access > 0) {
         (void)tk_unl_mtx(g_mtx_probe_access);
     }
@@ -216,32 +255,39 @@ EXPORT void wtf_fuzzer_inject_i2c_stretch(void)
     if (wtf_safety_is_aborted()) {
         return;
     }
+    s_fuzzer_cancelled = false;
 
     if (g_mtx_probe_access > 0) {
         (void)tk_loc_mtx(g_mtx_probe_access, TMO_FEVR);
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
-    /* Synchronize to active I2C transaction via I2C0 Hardware Status (`I2C0.sr.bus_busy`) */
     uint32_t t_wait = 0U;
-    while (I2C0.sr.bus_busy == 0U && t_wait < 250000U) {
+    while (I2C0.sr.bus_busy == 0U && t_wait < 250000U && !wtf_safety_is_aborted() && !s_fuzzer_cancelled) {
         esp_rom_delay_us(2);
         t_wait += 2U;
     }
-    inject_i2c_clock_stretch_50us();
-    wtf_safety_chirp_buzzer(20);
-    tk_dly_tsk(150); /* Visible LED hold */
-    wtf_safety_set_state(WTF_STATE_ARMED);
-    tm_printf((UB *)"[FUZZER] MANUAL INJECT: 50 µs I2C clock-stretch on Row 42 (Probe 3)\n");
-
-    if (g_mbf_telemetry > 0) {
-        wtf_record_t alert_rec;
-        alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
-        alert_rec.protocol = PROTO_FAULT_ALERT;
-        alert_rec.probe_id = 3;
-        alert_rec.length = 0;
-        (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+    if (!wtf_safety_is_aborted() && !s_fuzzer_cancelled) {
+        inject_i2c_clock_stretch_50us();
+        wtf_sniffer_mark_exploit(PROTO_I2C);
+        wtf_safety_chirp_buzzer(20);
+        for (int i = 0; i < 15 && !wtf_safety_is_aborted() && !s_fuzzer_cancelled; i++) {
+            tk_dly_tsk(10);
+        }
+        if (g_mbf_telemetry > 0) {
+            wtf_record_t alert_rec;
+            alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
+            alert_rec.protocol = PROTO_FAULT_ALERT;
+            alert_rec.probe_id = 3;
+            alert_rec.length = 0;
+            (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+        }
     }
+    if (!wtf_safety_is_aborted()) {
+        wtf_safety_set_state(WTF_STATE_ARMED);
+    }
+    tm_printf((UB *)"[FUZZER] MANUAL INJECT: 50 us I2C clock-stretch (Probe 3)\n");
+
     if (g_mtx_probe_access > 0) {
         (void)tk_unl_mtx(g_mtx_probe_access);
     }
@@ -252,23 +298,92 @@ EXPORT void wtf_fuzzer_inject_wireless_jam(void)
     if (wtf_safety_is_aborted()) {
         return;
     }
+    s_fuzzer_cancelled = false;
+
+    if (g_mtx_probe_access > 0) {
+        (void)tk_loc_mtx(g_mtx_probe_access, TMO_FEVR);
+    }
+
+    uint8_t ch = wtf_sniffer_get_154_channel();
+    wtf_safety_set_state(WTF_STATE_INJECTING);
+    (void)esp_ieee802154_set_channel(ch);
+    inject_wireless_target_jam_50us();
+    tk_dly_tsk(8);
+    inject_wireless_target_jam_50us();
+    (void)esp_ieee802154_receive();
+    wtf_sniffer_on_154_jam(ch);
+    wtf_safety_chirp_buzzer(20);
+    tk_dly_tsk(80);
+    if (!wtf_safety_is_aborted()) {
+        wtf_safety_set_state(WTF_STATE_ARMED);
+    }
+    tm_printf((UB *)"[FUZZER:WIRELESS] Targeted 802.15.4 jam to Iris on Ch %u\n", (unsigned)ch);
+
+    if (g_mbf_telemetry > 0) {
+        wtf_record_t alert_rec;
+        alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
+        alert_rec.protocol = PROTO_FAULT_ALERT;
+        alert_rec.probe_id = ch;
+        alert_rec.length = 0;
+        (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
+    }
+    if (g_mtx_probe_access > 0) {
+        (void)tk_unl_mtx(g_mtx_probe_access);
+    }
+}
+
+EXPORT void wtf_fuzzer_inject_wifi_jam(uint8_t ch)
+{
+    if (wtf_safety_is_aborted()) {
+        return;
+    }
+    if (ch < 1U || ch > 13U) {
+        ch = 6U;
+    }
+    s_fuzzer_cancelled = false;
+
+    if (!s_wtf_espnow_ready) {
+        if (esp_now_init() == ESP_OK) {
+            esp_now_peer_info_t peer = {0};
+            memcpy(peer.peer_addr, s_iris_target_mac, 6);
+            peer.channel = 0;
+            peer.ifidx = WIFI_IF_AP;
+            peer.encrypt = false;
+            (void)esp_now_add_peer(&peer);
+            s_wtf_espnow_ready = true;
+        }
+    }
 
     if (g_mtx_probe_access > 0) {
         (void)tk_loc_mtx(g_mtx_probe_access, TMO_FEVR);
     }
 
     wtf_safety_set_state(WTF_STATE_INJECTING);
-    inject_wireless_target_jam_50us();
-    wtf_safety_chirp_buzzer(20);
-    tk_dly_tsk(150); /* Visible LED hold */
-    wtf_safety_set_state(WTF_STATE_ARMED);
-    tm_printf((UB *)"[FUZZER:WIRELESS] MANUAL INJECT: Targeted 802.15.4 burst to Iris BSSID 02:00:00:00:00:03 on Ch 15 (FR-6, TC-3.3)\n");
+    if (ch != 6U) {
+        (void)esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    }
+    if (s_wtf_espnow_ready) {
+        static const uint8_t k_jam_msg[] = "WTF:JAM:WIFI";
+        for (int k = 0; k < 4; k++) {
+            (void)esp_now_send(s_iris_target_mac, k_jam_msg, sizeof(k_jam_msg) - 1U);
+            tk_dly_tsk(12);
+        }
+    }
+    if (ch != 6U) {
+        (void)esp_wifi_set_channel(6U, WIFI_SECOND_CHAN_NONE);
+    }
+
+    wtf_sniffer_on_wifi_jam(ch);
+    if (!wtf_safety_is_aborted()) {
+        wtf_safety_set_state(WTF_STATE_ARMED);
+    }
+    tm_printf((UB *)"[FUZZER:WIFI] Targeted Wi-Fi jam to Iris on Ch %u\n", (unsigned)ch);
 
     if (g_mbf_telemetry > 0) {
         wtf_record_t alert_rec;
         alert_rec.timestamp_us = (uint32_t)esp_timer_get_time();
         alert_rec.protocol = PROTO_FAULT_ALERT;
-        alert_rec.probe_id = 15;
+        alert_rec.probe_id = 4; /* Wi-Fi jam marker */
         alert_rec.length = 0;
         (void)tk_snd_mbf(g_mbf_telemetry, &alert_rec, sizeof(alert_rec), TMO_POL);
     }
@@ -283,7 +398,6 @@ EXPORT void wtf_fuzzer_send_iris_cmd(const char *cmd_str)
         return;
     }
 
-    /* FR-6 Invariant: Verify destination strictly matches Iris allow-list (Never broadcast) */
     if (s_iris_target_short != 0x0003) {
         return;
     }
@@ -292,24 +406,23 @@ EXPORT void wtf_fuzzer_send_iris_cmd(const char *cmd_str)
     size_t cmd_len = strlen(cmd_str);
     if (cmd_len > 30) cmd_len = 30;
 
-    uint8_t psdu_len = 2U + 1U + 2U + 2U + 2U + (uint8_t)cmd_len;
+    uint8_t psdu_len = (uint8_t)(2U + 1U + 2U + 2U + 2U + (uint8_t)cmd_len + 2U);
     frame[0] = psdu_len;
-    frame[1] = 0x41; /* FCF LSB: Data frame, PAN ID comp */
-    frame[2] = 0x88; /* FCF MSB: Short dest, short src */
+    frame[1] = 0x41;
+    frame[2] = 0x88;
     frame[3] = (uint8_t)(esp_timer_get_time() & 0xFF);
-    frame[4] = 0x34; /* PAN ID 0x1234 */
+    frame[4] = 0x34;
     frame[5] = 0x12;
     frame[6] = (uint8_t)(s_iris_target_short & 0xFF);
     frame[7] = (uint8_t)((s_iris_target_short >> 8) & 0xFF);
-    frame[8] = 0x01; /* Src WhatTheFlip */
+    frame[8] = 0x01;
     frame[9] = 0x00;
     memcpy(&frame[10], cmd_str, cmd_len);
 
     (void)esp_ieee802154_transmit(frame, false);
-    tm_printf((UB *)"[FUZZER:WIRELESS] OTA CMD to Iris 0x%04X: '%s' (FR-6, TC-3.3)\n",
+    tm_printf((UB *)"[FUZZER:WIRELESS] OTA CMD to Iris 0x%04X: '%s'\n",
               s_iris_target_short, cmd_str);
 }
-
 EXPORT void wtf_fuzzer_task(INT stacd, void *exinf)
 {
     (void)stacd;
