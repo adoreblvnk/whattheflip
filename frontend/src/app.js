@@ -2,8 +2,7 @@ import van from "vanjs-core";
 
 const { div, span, button, a, table, thead, tbody, tr, th, td, pre, strong, input } = van.tags;
 const svgNs = van.tags("http://www.w3.org/2000/svg");
-const { svg, g, rect, line, path, text, polyline, title: svgTitle } = svgNs;
-
+const { svg, g, rect, line, path, text, polyline } = svgNs;
 // ===========================================================================
 // 1. Hardware, Telemetry & CTF State (Zero Hardcoded Flags)
 // ===========================================================================
@@ -17,16 +16,15 @@ const uartBaud           = van.state(115200);
 const uartClear          = van.state(false);
 const uartSample         = van.state("");
 
-const wifiChannelMode    = van.state(6);
+const wifiChannelMode    = van.state(0);
 const wifiActiveCh       = van.state(6);
 const wifiClear          = van.state(false);
-const wifiSampleCh       = van.state(6);
+const wifiSampleCh       = van.state(0);
 const wifiSample         = van.state("");
 
-const zigbeeChannel      = van.state(11);
+const zigbeeChannel      = van.state(0);
 const z154Clear          = van.state(false);
 const z154Sample         = van.state("");
-
 // Live Telemetry Counters
 const uartPkts           = van.state(0);
 const i2cPkts            = van.state(0);
@@ -36,15 +34,13 @@ const corruptedCount     = van.state(0);
 const pcapSize           = van.state(24);
 const pcapSyncedBytes    = van.state(0);
 
-// Hardware-Captured CTF Flags (populated strictly from silicon telemetry / PCAP)
+// Hardware-Captured Messages (populated strictly from live telemetry / PCAP)
 const ctfUart            = van.state("");
-const ctfI2c             = van.state("");
 const ctfWifi            = van.state("");
 const ctfZigbee          = van.state("");
 const ctfBonus           = van.state("");
 const ctfImask           = van.state(0);
 const ctfEmask           = van.state(0);
-
 // Iris Proximity & Sensor State
 const irisRssi           = van.state(null);
 const irisVerified       = van.state(false);
@@ -114,7 +110,6 @@ const ICONS = {
 
 function tipHandlers(textStr) {
   return {
-    title: textStr,
     onmouseenter: (e) => { hoverTip.val = { text: textStr, x: e.clientX + 12, y: e.clientY + 14 }; },
     onmousemove:  (e) => { hoverTip.val = { text: textStr, x: e.clientX + 12, y: e.clientY + 14 }; },
     onmouseleave: () => { hoverTip.val = null; },
@@ -133,8 +128,7 @@ function formatHex(dataBytes) {
   } else if (typeof dataBytes === "string") {
     for (let i = 0; i < dataBytes.length; i++) bytes.push(dataBytes.charCodeAt(i) & 0xff);
   }
-  if (bytes.length === 0) return "0000:  (0 payload bytes)";
-
+  if (bytes.length === 0) return "0000:  0 payload bytes";
   let lines = [];
   for (let i = 0; i < bytes.length; i += 16) {
     let chunk = bytes.slice(i, i + 16);
@@ -191,15 +185,30 @@ function clearAllStats() {
   triggerHardwareCommand("C", "Stats cleared and fault injection stopped");
 }
 
+let wifiAutoScanning = false;
+let zigbeeAutoScanning = false;
+
 function selectToolMode(mode) {
+  wifiAutoScanning = false;
+  zigbeeAutoScanning = false;
   toolMode.val = mode;
   if (mode === "OFF" || mode === "AUTO") {
     filterProtocol.val = "ALL";
   } else {
     filterProtocol.val = mode;
   }
+  if (mode === "WIFI") {
+    wifiChannelMode.val = 0;
+    wifiSampleCh.val = 0;
+    wifiClear.val = false;
+    wifiSample.val = "";
+  } else if (mode === "ZIGBEE") {
+    zigbeeChannel.val = 0;
+    z154Clear.val = false;
+    z154Sample.val = "";
+  }
   fetch("/cmd?mode=" + mode.toLowerCase(), { method: "POST" })
-    .then(() => showToast(mode === "OFF" ? "Capture paused (Off)" : `Switched mode to ${mode}`))
+    .then(() => showToast(mode === "OFF" ? "Capture paused" : `Switched mode to ${mode}`))
     .catch(() => {});
 }
 
@@ -229,7 +238,24 @@ function selectWifiChannel(ch) {
     .catch(() => {});
 }
 
+async function triggerWifiAutoScan() {
+  if (wifiAutoScanning) return;
+  wifiAutoScanning = true;
+  showToast("Scanning Wi-Fi Ch 1–13...");
+  for (let ch = 1; ch <= 13; ch++) {
+    if (!wifiAutoScanning || toolMode.val !== "WIFI" || safetyState.val === "Stopped") break;
+    selectWifiChannel(ch);
+    await new Promise(r => setTimeout(r, 480));
+    if (wifiClear.val) {
+      showToast(`Locked Iris Wi-Fi on Ch ${ch}`);
+      break;
+    }
+  }
+  wifiAutoScanning = false;
+}
+
 function jamWifiChannel(ch) {
+  if (ch < 1 || ch > 13) return;
   activeGlitchBus.val = "WIFI";
   setTimeout(() => { if (activeGlitchBus.val === "WIFI") activeGlitchBus.val = ""; }, 2200);
   wifiClear.val = false;
@@ -245,14 +271,30 @@ function selectZigbeeChannel(ch) {
   z154Sample.val = "";
   let freq = 2405 + 5 * (ch - 11);
   fetch("/cmd?zch=" + ch, { method: "POST" })
-    .then(() => showToast(`Tuned Zigbee to Ch ${ch} (${freq} MHz)`))
+    .then(() => showToast(`Tuned Zigbee to Ch ${ch} · ${freq} MHz`))
     .catch(() => {});
 }
 
-function jamZigbeeChannel() {
-  triggerHardwareCommand("W", `Jammed Zigbee Ch ${zigbeeChannel.val} — Iris hopping to a new channel`, "ZIGBEE");
+async function triggerZigbeeAutoScan() {
+  if (zigbeeAutoScanning) return;
+  zigbeeAutoScanning = true;
+  showToast("Scanning Zigbee Ch 11–26...");
+  for (let ch = 11; ch <= 26; ch++) {
+    if (!zigbeeAutoScanning || toolMode.val !== "ZIGBEE" || safetyState.val === "Stopped") break;
+    selectZigbeeChannel(ch);
+    await new Promise(r => setTimeout(r, 420));
+    if (z154Clear.val) {
+      showToast(`Locked Iris Zigbee on Ch ${ch}`);
+      break;
+    }
+  }
+  zigbeeAutoScanning = false;
 }
 
+function jamZigbeeChannel() {
+  if (zigbeeChannel.val < 11 || zigbeeChannel.val > 26) return;
+  triggerHardwareCommand("W", `Jammed Zigbee Ch ${zigbeeChannel.val} — Iris hopping to a new channel`, "ZIGBEE");
+}
 function updateAccelHistory(rx, ry, rz) {
   let changed = (accelX.val !== null) && (Math.abs(rx - accelX.val) > 8 || Math.abs(ry - accelY.val) > 8 || Math.abs(rz - accelZ.val) > 8);
   accelX.val = rx;
@@ -312,7 +354,7 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
       latestUartRecv.val = ascii;
       if (rxCsum === expCsum) {
         if (flag) ctfUart.val = flag;
-        summary = `Valid frame #${ctr}` + (flag ? ` (${flag})` : "");
+        summary = `Valid frame #${ctr}` + (flag ? ` · ${flag}` : "");
         details = {
           Source: "Hestia (GP0 UART0 TX)",
           Destination: "Daphne (GP1 UART0 RX)",
@@ -350,33 +392,23 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
     if (body.length >= 1) {
       let addr7 = body[0] >> 1;
       let rw    = (body[0] & 1) ? "Read" : "Write";
-      if (addr7 === 0x57) {
-        let ascii = sanitizePrintable(body.slice(1));
-        let flag = extractCtfFlag(ascii);
-        if (flag) ctfI2c.val = flag;
-        summary = flag ? `Daphne I²C flag beacon (${flag})` : `Daphne I²C beacon (${ascii})`;
-        details = {
-          Source: "Daphne I²C Master",
-          TargetAddress: "0x57 (CTF Beacon)",
-          DecodedPayload: flag || ascii
-        };
-      } else if ((body[0] & 1) === 1 && body.length >= 7 && addr7 === 0x19) {
+      if ((body[0] & 1) === 1 && body.length >= 7 && addr7 === 0x19) {
         let rx = (body[2] << 8) | body[1]; if (rx & 0x8000) rx -= 65536; rx >>= 4;
         let ry = (body[4] << 8) | body[3]; if (ry & 0x8000) ry -= 65536; ry >>= 4;
         let rz = (body[6] << 8) | body[5]; if (rz & 0x8000) rz -= 65536; rz >>= 4;
         updateAccelHistory(rx, ry, rz);
         summary = `GY-511 Accel Read: X=${rx} mg, Y=${ry} mg, Z=${rz} mg`;
         details = {
-          Bus: "I²C1 (400 kHz)",
-          TargetDevice: "LSM303DLHC Accelerometer (0x19)",
+          Bus: "I²C1 · 400 kHz",
+          TargetDevice: "LSM303DLHC Accelerometer 0x19",
           Readings: `X=${rx} mg, Y=${ry} mg, Z=${rz} mg`
         };
       } else {
         let devName = addr7 === 0x19 ? "LSM303DLHC Accel" : (addr7 === 0x1e ? "LSM303DLHC Mag" : `Slave 0x${addr7.toString(16).toUpperCase()}`);
-        summary = `${devName} ${rw} (${body.length}B)`;
+        summary = `${devName} ${rw} · ${body.length} B`;
         details = {
-          Bus: "I²C1 (400 kHz)",
-          TargetDevice: `${devName} (0x${addr7.toString(16).toUpperCase()})`,
+          Bus: "I²C1 · 400 kHz",
+          TargetDevice: `${devName} 0x${addr7.toString(16).toUpperCase()}`,
           Operation: rw,
           ByteCount: `${body.length} bytes`
         };
@@ -395,15 +427,15 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
     let isIris = ascii.includes("IRIS:") || (body.length >= 16 && body.some((_, i) => i + 5 < body.length && body[i] === 0x02 && body[i + 5] === 0x03));
     if (flag) ctfWifi.val = flag;
     if (isIris) {
-      summary = flag ? `Iris Ch ${probeId} cleartext (${flag})` : `Iris Ch ${probeId} scrambled decoy bytes`;
+      summary = flag ? `Iris Ch ${probeId} cleartext · ${flag}` : `Iris Ch ${probeId} scrambled bytes`;
     } else {
-      summary = `802.11 frame on Ch ${probeId} (${body.length} bytes)`;
+      summary = `802.11 frame on Ch ${probeId} · ${body.length} B`;
     }
     details = {
       Protocol: "IEEE 802.11 Wi-Fi",
       Channel: `Channel ${probeId}`,
-      Source: isIris ? "Iris (02:00:00:00:00:03)" : "Ambient 802.11 Station",
-      DecodedPayload: flag || (ascii.includes("IRIS:SCRM:") ? "Scrambled decoy payload (wrong channel)" : ascii)
+      Source: isIris ? "Iris 02:00:00:00:00:03" : "Ambient 802.11 Station",
+      DecodedPayload: flag || (ascii.includes("IRIS:SCRM:") ? "Scrambled payload" : ascii)
     };
     if (toolMode.val === "WIFI" || toolMode.val === "AUTO") wifiActiveUntil.val = nowMs + 1200;
   } else if (protoId === 5) {
@@ -414,13 +446,13 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
     let flag  = extractCtfFlag(ascii);
     let seqNum = body.length >= 3 ? body[2] : 0;
     if (flag) ctfZigbee.val = flag;
-    summary = flag ? `Iris Ch ${probeId} Seq #${seqNum} (${flag})` : `Zigbee Ch ${probeId} Seq #${seqNum} (scrambled bytes)`;
+    summary = flag ? `Iris Ch ${probeId} #${seqNum} · ${flag}` : `Zigbee Ch ${probeId} #${seqNum} · scrambled`;
     details = {
       Protocol: "IEEE 802.15.4 / Zigbee",
-      Channel: `Ch ${probeId} (${2405 + 5 * (probeId - 11)} MHz)`,
+      Channel: `Ch ${probeId} · ${2405 + 5 * (probeId - 11)} MHz`,
       PAN_ID: "0x1234",
       Sequence: `#${seqNum}`,
-      DecodedPayload: flag || "Scrambled decoy payload (wrong channel)"
+      DecodedPayload: flag || "Scrambled payload"
     };
     if (toolMode.val === "ZIGBEE" || toolMode.val === "AUTO") zigbeeActiveUntil.val = nowMs + 1200;
   } else if (protoId === 3) {
@@ -428,8 +460,7 @@ function dissectPcapRecord(tsSec, tsUsec, inclLen, payloadBytes) {
     tagClass = "fault";
     chan     = probeId === 0 ? "UART Glitch" : (probeId === 2 ? "I²C ACK-Kill" : (probeId === 3 ? "I²C Stretch" : (probeId === 4 ? "Wi-Fi Jam" : `Zigbee Jam Ch ${probeId}`)));
     isFault  = true;
-    let desc = probeId === 0 ? "10 us UART bit-flip injected across R1 (220 Ohm)"
-             : probeId === 2 ? "50 us I²C 9th-clock ACK-kill on SDA — Daphne ran 9-clock recovery"
+    let desc = probeId === 0 ? "10 us UART bit-flip injected across R1 220 Ohm"
              : probeId === 3 ? "50 us I²C SCL clock-stretch held bus low"
              : probeId === 4 ? "Targeted Wi-Fi jam sent to Iris — Iris hopped channels"
              : `Targeted 802.15.4 jam sent on Ch ${probeId} — Iris hopped channels`;
@@ -554,14 +585,7 @@ function handlePcapFileUpload(e) {
 function TopHeaderBar() {
   return div({ class: "top-cmd-bar" },
     div({ class: "brand-cluster" },
-      span({ class: "brand-logo" }, "WHATTHEFLIP"),
-      span({
-        class: () => "status-pill" + (safetyState.val === "Stopped" ? " stopped" : ""),
-        ...tipHandlers("Hardware probe safety state. E-Stop floats all probes on whattheflip to High-Z and turns off LEDs.")
-      },
-        span({ class: "status-dot" }),
-        () => safetyState.val
-      )
+      span({ class: "brand-logo" }, "WHATTHEFLIP")
     ),
     div({ class: "safety-cluster" },
       button({
@@ -577,8 +601,8 @@ function TopHeaderBar() {
           }, ICONS.play(), "Resume")
         : button({
             class: "cmd-btn estop",
-            ...tipHandlers("Stop whattheflip only: float probes P0-P3 to High-Z and turn off all whattheflip LEDs (stealth mode)"),
-            onclick: () => { triggerHardwareCommand("E", "E-Stop active: whattheflip stopped (stealth mode)"); safetyState.val = "Stopped"; }
+            ...tipHandlers("Float probes P0-P3 to High-Z and turn off all whattheflip LEDs"),
+            onclick: () => { triggerHardwareCommand("E", "E-Stop active: whattheflip stopped"); safetyState.val = "Stopped"; }
           }, ICONS.stop(), "E-Stop"),
       button({
         class: "cmd-btn",
@@ -620,7 +644,7 @@ function ToolBeltBar() {
       }, m.icon(), m.label))
     ),
     span({ class: "mode-hint" }, () => {
-      if (toolMode.val === "OFF") return "Standby — select Auto or a protocol to begin";
+      if (toolMode.val === "OFF") return "Select Auto or a protocol to begin";
       if (toolMode.val === "AUTO") return "Auto-discovery active across all 4 buses";
       return `Inspecting ${toolMode.val} traffic & panel`;
     })
@@ -691,14 +715,12 @@ function BreadboardCanvas() {
 
         return svg({ id: "topology-svg", class: "topology-svg", viewBox: "0 0 680 264" },
           // 1. Simplex UART Link: Hestia -> R1 -> Daphne
-          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("UART TX line on breadboard Row 22 (Hestia GP0 to 220 Ohm R1)") },
-            svgTitle("UART TX line on breadboard Row 22"),
+          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("UART TX line on Row 22: Hestia GP0 to 220 Ohm R1") },
             line({ x1: 150, y1: 54, x2: 245, y2: 54, stroke: uartLive ? "var(--proto-uart)" : idleWire, "stroke-width": 3 }),
             path({ d: "M 235 49 L 244 54 L 235 59 Z", fill: uartLive ? "var(--proto-uart)" : idleWire }),
             text({ x: 197, y: 31, fill: uartLive ? "var(--proto-uart)" : "var(--fg-dim)", "font-size": 10.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "UART TX →")
           ),
-          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("UART RX line on breadboard Row 13 (R1 to Daphne GP1)") },
-            svgTitle("UART RX line on breadboard Row 13"),
+          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("UART RX line on Row 13: R1 to Daphne GP1") },
             line({
               x1: 315, y1: 54, x2: 410, y2: 54,
               stroke: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--proto-uart)" : idleWire),
@@ -707,19 +729,17 @@ function BreadboardCanvas() {
             }),
             path({ d: "M 400 49 L 409 54 L 400 59 Z", fill: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--proto-uart)" : idleWire) }),
             text({ x: 362, y: 31, fill: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--proto-uart)" : "var(--fg-dim)"), "font-size": 10.5, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
-              glitchBus === "UART" ? "UART RX (GLITCH)" : "UART RX")
+              glitchBus === "UART" ? "UART RX GLITCH" : "UART RX")
           ),
 
           // 2. Probe 1 Sniff Tap (Row 22 -> WhatTheFlip GPIO5)
-          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("Probe 1 (GPIO5) passive UART sniffer tap on Row 22") },
-            svgTitle("Probe 1 (GPIO5) UART sniffer tap on Row 22"),
+          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("Probe 1 GPIO5 passive UART sniffer tap on Row 22") },
             path({ d: "M 197 54 L 197 124 L 105 124 L 105 166", stroke: uartLive ? "var(--proto-uart)" : idleWire, "stroke-width": 1.6, "stroke-dasharray": probeDash, fill: "none" }),
             text({ x: 145, y: 118, fill: uartLive ? "var(--proto-uart)" : "var(--fg-dim)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "P1 Sniff")
           ),
 
           // 3. Probe 0 Glitch Tap (WhatTheFlip GPIO4 -> Row 13)
-          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("Probe 0 (GPIO4) 10 us UART glitch injector tap on Row 13") },
-            svgTitle("Probe 0 (GPIO4) glitch injector tap on Row 13"),
+          g({ class: "topo-wire", onclick: () => selectToolMode("UART"), ...tipHandlers("Probe 0 GPIO4 10 us UART glitch injector tap on Row 13") },
             path({
               d: "M 155 166 L 155 142 L 362 142 L 362 54",
               stroke: glitchBus === "UART" ? "var(--state-glitch)" : (uartLive ? "var(--state-warn)" : idleWire),
@@ -729,61 +749,54 @@ function BreadboardCanvas() {
           ),
 
           // 4. I2C Bus between Daphne & GY-511 (Row 55 SCL / Row 58 SDA)
-          g({ class: "topo-wire", onclick: () => selectToolMode("I2C"), ...tipHandlers("I²C1 bus on breadboard Row 55 (SCL) and Row 58 (SDA)") },
-            svgTitle("I²C1 bus on Row 55 (SCL) and Row 58 (SDA)"),
+          g({ class: "topo-wire", onclick: () => selectToolMode("I2C"), ...tipHandlers("I²C1 bus on Row 55 SCL and Row 58 SDA") },
             path({
               d: "M 480 90 L 480 116 L 620 116 L 620 136",
               stroke: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : (i2cLive ? "var(--proto-i2c)" : idleWire),
               "stroke-width": (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? 3.5 : 2.5, fill: "none"
             }),
             text({ x: 552, y: 108, fill: (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "var(--state-glitch)" : (i2cLive ? "var(--proto-i2c)" : "var(--fg-dim)"), "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
-              (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "I²C FAULT" : "I²C Bus (400kHz)")
+              (glitchBus === "I2C_ACK" || glitchBus === "I2C_STRETCH") ? "I²C FAULT" : "I²C 400 kHz")
           ),
 
           // 5. Probes 2 & 3 Tap (WhatTheFlip GPIO6/7 -> I2C Bus)
-          g({ class: "topo-wire", onclick: () => selectToolMode("I2C"), ...tipHandlers("Probes 2 & 3 (GPIO6 SDA / GPIO7 SCL) tapped on Row 58 / Row 55") },
-            svgTitle("Probes 2 & 3 (GPIO6/7) on Row 58 / Row 55"),
+          g({ class: "topo-wire", onclick: () => selectToolMode("I2C"), ...tipHandlers("Probes 2 & 3 GPIO6 SDA / GPIO7 SCL on Row 58 / Row 55") },
             path({ d: "M 195 194 L 480 194 L 480 116", stroke: i2cLive ? "var(--proto-i2c)" : idleWire, "stroke-width": 1.6, "stroke-dasharray": probeDash, fill: "none" }),
-            text({ x: 338, y: 188, fill: i2cLive ? "var(--proto-i2c)" : "var(--fg-dim)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "P2/P3 (SDA/SCL)")
+            text({ x: 338, y: 188, fill: i2cLive ? "var(--proto-i2c)" : "var(--fg-dim)", "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" }, "P2/P3 SDA/SCL")
           ),
 
           // 6. 2.4 GHz RF Link (Iris <-> WhatTheFlip)
-          g({ class: "topo-wire", onclick: () => selectToolMode(mode === "ZIGBEE" ? "ZIGBEE" : "WIFI"), ...tipHandlers("2.4 GHz wireless link for Wi-Fi (Ch 1-13) and Zigbee 802.15.4 (Ch 11-26)") },
-            svgTitle("2.4 GHz wireless link between WhatTheFlip and Iris"),
+          g({ class: "topo-wire", onclick: () => selectToolMode(mode === "ZIGBEE" ? "ZIGBEE" : "WIFI"), ...tipHandlers("2.4 GHz link for Wi-Fi Ch 1–13 and Zigbee Ch 11–26") },
             line({
               x1: 195, y1: 236, x2: 475, y2: 236,
               stroke: (glitchBus === "WIFI" || glitchBus === "ZIGBEE") ? "var(--state-glitch)" : (zigbeeLive ? "var(--proto-zigbee)" : (wifiLive ? "var(--proto-wifi)" : idleWire)),
               "stroke-width": 2, "stroke-dasharray": "5 4"
             }),
             text({ x: 335, y: 227, fill: (glitchBus === "WIFI" || glitchBus === "ZIGBEE") ? "var(--state-glitch)" : (zigbeeLive ? "var(--proto-zigbee)" : (wifiLive ? "var(--proto-wifi)" : "var(--fg-dim)")), "font-size": 10, "font-family": "monospace", "font-weight": "bold", "text-anchor": "middle" },
-              mode === "ZIGBEE" ? `Zigbee Ch ${zigbeeChannel.val}` : mode === "WIFI" ? `Wi-Fi Ch ${wifiChannelMode.val}` : "2.4 GHz RF")
+              mode === "ZIGBEE" ? (zigbeeChannel.val >= 11 ? `Zigbee Ch ${zigbeeChannel.val}` : "Zigbee Select") : mode === "WIFI" ? (wifiChannelMode.val >= 1 ? `Wi-Fi Ch ${wifiChannelMode.val}` : "Wi-Fi Select") : "2.4 GHz RF")
           ),
 
-          // Hardware Boxes (1-line tooltips)
-          g({ class: "topo-node", onclick: () => selectToolMode("UART"), ...tipHandlers("Hestia (RP2040): Transmits UART counter frames and flag at dynamic baud rate") },
-            svgTitle("Hestia (RP2040): UART TX victim transmitting at dynamic baud rate"),
+          // Hardware Boxes
+          g({ class: "topo-node", onclick: () => selectToolMode("UART"), ...tipHandlers("Hestia RP2040: Transmits UART counter frames and message at dynamic baud rate") },
             rect({ class: "node-box", x: 15, y: 20, width: 135, height: 66, rx: 5, fill: "#ffffff", stroke: "rgba(15,23,42,0.22)", "stroke-width": 1.2 }),
             text({ x: 25, y: 40, fill: "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "HESTIA"),
-            text({ x: 25, y: 56, fill: uartLive ? "var(--proto-uart)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, `UART TX (${uartBaud.val})`),
+            text({ x: 25, y: 56, fill: uartLive ? "var(--proto-uart)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, `UART TX ${uartBaud.val}`),
             text({ x: 25, y: 72, fill: "var(--fg-dim)", "font-size": 9.5, "font-family": "monospace" }, "RP2040 Victim A")
           ),
 
-          g({ class: "topo-node", onclick: () => selectToolMode("UART"), ...tipHandlers("R1 (220 Ohm): Current-limiting resistor isolating Hestia TX during 10 us glitches") },
-            svgTitle("R1 220 Ohm series isolation resistor"),
+          g({ class: "topo-node", onclick: () => selectToolMode("UART"), ...tipHandlers("R1 220 Ohm current-limiting resistor isolating Hestia TX during 10 us glitches") },
             rect({ class: "node-box", x: 245, y: 38, width: 70, height: 32, rx: 4, fill: "#ffffff", stroke: "rgba(15,23,42,0.22)", "stroke-width": 1.2 }),
             text({ x: 280, y: 58, fill: "var(--fg-primary)", "font-size": 10.5, "font-weight": "bold", "font-family": "monospace", "text-anchor": "middle" }, "R1 220Ω")
           ),
 
-          g({ class: "topo-node", onclick: () => selectToolMode("I2C"), ...tipHandlers("Daphne (RP2040): Validates UART checksums, polls GY-511, and sounds GP18 alarm on faults") },
-            svgTitle("Daphne (RP2040): UART RX + I2C Master + GP18 alarm"),
+          g({ class: "topo-node", onclick: () => selectToolMode("I2C"), ...tipHandlers("Daphne RP2040: Validates UART checksums, polls GY-511, and sounds GP18 alarm on faults") },
             rect({ class: "node-box", x: 410, y: 20, width: 145, height: 70, rx: 5, fill: "#ffffff", stroke: "rgba(15,23,42,0.22)", "stroke-width": 1.2 }),
             text({ x: 420, y: 40, fill: "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "DAPHNE"),
             text({ x: 420, y: 56, fill: uartLive ? "var(--proto-uart)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, "UART RX + Alarm"),
             text({ x: 420, y: 72, fill: i2cLive ? "var(--proto-i2c)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace", "font-weight": "600" }, `I²C Master • GP${8 + tiltSlot}`)
           ),
 
-          g({ class: "topo-node", onclick: () => selectToolMode("I2C"), ...tipHandlers("GY-511 (LSM303DLHC): 3-axis accelerometer and magnetometer polled at 400 kHz") },
-            svgTitle("GY-511 IMU (LSM303DLHC): Accelerometer & Magnetometer"),
+          g({ class: "topo-node", onclick: () => selectToolMode("I2C"), ...tipHandlers("GY-511 LSM303DLHC 3-axis accelerometer and magnetometer polled at 400 kHz") },
             rect({
               class: "node-box", x: 565, y: 136, width: 105, height: 72, rx: 5,
               fill: i2cDelta ? "var(--proto-i2c-bg)" : "#ffffff",
@@ -799,25 +812,23 @@ function BreadboardCanvas() {
               : text({ x: 575, y: 180, fill: "var(--fg-dim)", "font-size": 9.5, "font-family": "monospace" }, "Awaiting I²C")
           ),
 
-          g({ class: "topo-node", onclick: () => selectToolMode("AUTO"), ...tipHandlers("WhatTheFlip (ESP32-C6): Multi-protocol sniffer, fault injector, and SoftAP web dashboard") },
-            svgTitle("WhatTheFlip (ESP32-C6): Multi-protocol sniffer & fault injector"),
+          g({ class: "topo-node", onclick: () => selectToolMode("AUTO"), ...tipHandlers("WhatTheFlip ESP32-C6: Multi-protocol sniffer, fault injector, and SoftAP web dashboard") },
             rect({ class: "node-box", x: 15, y: 166, width: 180, height: 84, rx: 5, fill: "#ffffff", stroke: stopped ? "var(--state-glitch)" : "rgba(15,23,42,0.22)", "stroke-width": 1.4 }),
             text({ x: 25, y: 186, fill: "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "WHATTHEFLIP"),
             text({ x: 25, y: 203, fill: uartLive ? "var(--proto-uart)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace" }, "P0/P1: UART Probes"),
             text({ x: 25, y: 219, fill: i2cLive ? "var(--proto-i2c)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace" }, "P2/P3: I²C Probes"),
             text({ x: 25, y: 236, fill: stopped ? "var(--state-glitch)" : (rfLive ? "var(--proto-wifi)" : "var(--fg-muted)"), "font-size": 10, "font-family": "monospace", "font-weight": stopped ? "bold" : "normal" },
-              stopped ? "STOPPED (STEALTH)" : `MODE: ${mode}`)
+              stopped ? "STOPPED" : `MODE: ${mode}`)
           ),
 
-          g({ class: "topo-node", onclick: () => selectToolMode("ZIGBEE"), ...tipHandlers("Iris (ESP32-C6): Wireless victim hopping Wi-Fi (Ch 1-13) and Zigbee (Ch 11-26)") },
-            svgTitle("Iris (ESP32-C6): Wireless victim broadcasting Wi-Fi & Zigbee"),
+          g({ class: "topo-node", onclick: () => selectToolMode("ZIGBEE"), ...tipHandlers("Iris ESP32-C6: Wireless victim hopping Wi-Fi Ch 1–13 and Zigbee Ch 11–26") },
             rect({ class: "node-box", x: 475, y: 212, width: 195, height: 48, rx: 5, fill: "#ffffff", stroke: rfLive ? "var(--proto-wifi)" : "rgba(15,23,42,0.22)", "stroke-width": 1.2 }),
             text({ x: 485, y: 231, fill: rfLive ? "var(--proto-wifi)" : "var(--fg-primary)", "font-size": 12, "font-weight": "bold", "font-family": "monospace" }, "IRIS"),
             text({ x: 485, y: 248, fill: irisVerified.val ? "var(--proto-uart)" : "var(--fg-muted)", "font-size": 10, "font-family": "monospace", "font-weight": "bold" },
               irisRssi.val !== null && irisRssi.val > -70 ? `RSSI ${irisRssi.val} dBm` : "2.4 GHz Target")
           ),
 
-          // Live Animated PDU Pills (ONLY when real packets flow in active mode; pass cleanly behind R1)
+          // Live Animated PDU Pills
           (uartLive && !(pduUartX > 225 && pduUartX < 318)) ? g({ transform: `translate(${pduUartX}, 46)` },
             rect({ x: 0, y: 0, width: 38, height: 16, rx: 3, fill: (pduPastR1 && glitchBus === "UART") ? "var(--state-glitch)" : "var(--proto-uart)" }),
             text({ x: 19, y: 11, fill: "#ffffff", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" },
@@ -832,7 +843,7 @@ function BreadboardCanvas() {
           rfLive ? g({ transform: `translate(${pduRfX}, 228)` },
             rect({ x: 0, y: 0, width: 42, height: 16, rx: 3, fill: (glitchBus === "WIFI" || glitchBus === "ZIGBEE") ? "var(--state-glitch)" : (zigbeeLive ? "var(--proto-zigbee)" : "var(--proto-wifi)") }),
             text({ x: 21, y: 11, fill: "#ffffff", "font-size": 8.5, "font-family": "monospace", "text-anchor": "middle", "font-weight": "bold" },
-              (glitchBus === "WIFI" || glitchBus === "ZIGBEE") ? "JAM" : (zigbeeLive ? `Ch${zigbeeChannel.val}` : `Ch${wifiChannelMode.val}`))
+              (glitchBus === "WIFI" || glitchBus === "ZIGBEE") ? "JAM" : (zigbeeLive ? (zigbeeChannel.val >= 11 ? `Ch${zigbeeChannel.val}` : "15.4") : (wifiChannelMode.val >= 1 ? `Ch${wifiChannelMode.val}` : "WiFi")))
           ) : null
         );
       }
@@ -846,47 +857,54 @@ function BreadboardCanvas() {
 function CtfVaultSection() {
   return div({ class: "panel-section" },
     div({ class: "panel-hdr" },
-      span({ class: "panel-title" }, "CAPTURED FLAGS"),
+      span({ class: "panel-title" }, "CAPTURED MESSAGES"),
       span({ class: "panel-meta" }, () => {
-        let count = [ctfUart.val, ctfI2c.val, ctfWifi.val, ctfZigbee.val].filter(Boolean).length;
-        return `${count}/4 victims`;
+        let count = [ctfUart.val, ctfWifi.val, ctfZigbee.val].filter(Boolean).length;
+        return `${count}/3 messages`;
       })
     ),
     div({ class: "ctf-grid" },
       div({ class: () => "ctf-item" + (ctfUart.val ? " found" : "") },
-        span({ class: "ctf-item-name" }, "Hestia (UART)"),
-        span({ class: "ctf-item-flag" }, () => ctfUart.val || "Locked — hunt UART baud")
+        span({ class: "ctf-item-name" }, "Hestia UART"),
+        span({ class: "ctf-item-flag" }, () => ctfUart.val || "Hunt baud rate")
       ),
-      div({ class: () => "ctf-item" + (ctfI2c.val ? " found" : "") },
-        span({ class: "ctf-item-name" }, "Daphne (I²C)"),
-        span({ class: "ctf-item-flag" }, () => ctfI2c.val || "Locked — sniff I²C bus")
+      div({ class: () => "ctf-item" + (((ctfImask.val & 2) && (ctfEmask.val & 2)) ? " found" : "") },
+        span({ class: "ctf-item-name" }, "Daphne I²C"),
+        span({ class: "ctf-item-flag" }, () => ((ctfImask.val & 2) && (ctfEmask.val & 2)) ? "GY-511 + 9-Clk Recovery" : (ctfImask.val & 2) ? "Run Kill ACK or Stretch" : "Sniff I²C bus")
       ),
       div({ class: () => "ctf-item" + (ctfWifi.val ? " found" : "") },
-        span({ class: "ctf-item-name" }, "Iris (Wi-Fi)"),
-        span({ class: "ctf-item-flag" }, () => ctfWifi.val || "Locked — hunt Ch 1-13")
+        span({ class: "ctf-item-name" }, "Iris Wi-Fi"),
+        span({ class: "ctf-item-flag" }, () => ctfWifi.val || "Hunt Ch 1–13")
       ),
       div({ class: () => "ctf-item" + (ctfZigbee.val ? " found" : "") },
-        span({ class: "ctf-item-name" }, "Iris (Zigbee)"),
-        span({ class: "ctf-item-flag" }, () => ctfZigbee.val || "Locked — hunt Ch 11-26")
+        span({ class: "ctf-item-name" }, "Iris Zigbee"),
+        span({ class: "ctf-item-flag" }, () => ctfZigbee.val || "Hunt Ch 11–26")
       )
     ),
-    () => ctfBonus.val
-      ? div({ class: "flag-box bonus" },
-          span({ class: "panel-meta", style: "color:var(--proto-wifi)" }, "BONUS SECRET UNLOCKED"),
+    () => {
+      if (ctfBonus.val) {
+        return div({ class: "flag-box bonus" },
+          span({ class: "panel-meta", style: "color:var(--proto-wifi)" }, "BONUS SECRET"),
           span({ class: "flag-value" }, ctfBonus.val)
-        )
-      : div({ class: "flag-box" },
-          span({ class: "panel-meta" }, "Bonus Secret"),
-          span({ style: "color:var(--fg-muted);font-size:12px" }, "Intercept and glitch/jam all 4 protocols to reveal the hidden secret flag.")
-        )
+        );
+      }
+      let both = (ctfImask.val & ctfEmask.val);
+      let stepLabel = (bit, name) => (both & (1 << bit)) ? `${name}: Done` : (ctfImask.val & (1 << bit)) ? `${name}: Glitch/Jam` : `${name}: Intercept`;
+      return div({ class: "flag-box" },
+        span({ class: "panel-meta" }, "Bonus Secret"),
+        span({ style: "color:var(--fg-muted);font-size:12px" }, "Reveals automatically after all 4 protocol intercepts and faults:"),
+        span({ class: "mono", style: "color:var(--fg-primary);font-size:11.5px;font-weight:700" },
+          `${stepLabel(0, "UART")} · ${stepLabel(1, "I²C")} · ${stepLabel(2, "Wi-Fi")} · ${stepLabel(3, "Zigbee")}`)
+      );
+    }
   );
 }
 
 function OffPanel() {
   return div({ class: "inspector-body" },
     div({ class: "empty-guide" },
-      strong({ style: "color:var(--fg-primary);font-family:var(--font-mono)" }, "CAPTURE STANDBY (OFF)"),
-      span("All probes and wireless capture are idle. Select Auto to monitor all buses, or choose UART, I²C, Wi-Fi, or Zigbee above.")
+      strong({ style: "color:var(--fg-primary);font-family:var(--font-mono)" }, "CAPTURE STANDBY"),
+      span("Probes and radios are idle. Select Auto or a protocol above.")
     ),
     CtfVaultSection()
   );
@@ -905,12 +923,12 @@ function AutoPanel() {
           div({ class: "sensor-metric-val", style: "color:var(--proto-uart)" }, () => `${uartBaud.val} bps`)
         ),
         div({ class: "sensor-metric" },
-          div({ class: "sensor-metric-label" }, "Wi-Fi Burst"),
-          div({ class: "sensor-metric-val", style: "color:var(--proto-wifi)" }, () => `Ch ${wifiChannelMode.val}`)
+          div({ class: "sensor-metric-label" }, "Wi-Fi Radio"),
+          div({ class: "sensor-metric-val", style: "color:var(--proto-wifi)" }, () => wifiChannelMode.val >= 1 ? `Ch ${wifiChannelMode.val}` : "Select")
         ),
         div({ class: "sensor-metric" },
           div({ class: "sensor-metric-label" }, "Zigbee Radio"),
-          div({ class: "sensor-metric-val", style: "color:var(--proto-zigbee)" }, () => `Ch ${zigbeeChannel.val}`)
+          div({ class: "sensor-metric-val", style: "color:var(--proto-zigbee)" }, () => zigbeeChannel.val >= 11 ? `Ch ${zigbeeChannel.val}` : "Select")
         )
       )
     ),
@@ -930,7 +948,7 @@ function UartPanel() {
         div({ class: "panel-hdr" },
           span({ class: "panel-title" }, "UART BAUD RATE HUNT"),
           span({ class: "panel-meta", style: () => uartClear.val ? "color:var(--proto-uart)" : "color:var(--state-warn)" },
-            () => uartClear.val ? `Decoded @ ${uartBaud.val} bps` : `Active: ${uartBaud.val} bps`)
+            () => uartClear.val ? `Decoded @ ${uartBaud.val} bps` : `${uartBaud.val} bps`)
         ),
         div({ style: "display:flex;gap:6px;flex-wrap:wrap" },
           bauds.map(b => button({
@@ -944,7 +962,7 @@ function UartPanel() {
           }, ICONS.radar(), "Auto-Detect")
         ),
         div({ class: () => "flag-box " + (uartClear.val || ctfUart.val ? "captured" : "scrambled") },
-          span({ class: "panel-meta" }, () => (uartClear.val || ctfUart.val) ? "Cleartext Flag Captured" : "Wire Preview (Scrambled on Wrong Baud)"),
+          span({ class: "panel-meta" }, () => (uartClear.val || ctfUart.val) ? "Cleartext Message" : "Wire Preview"),
           span({ class: "flag-value" }, () => ctfUart.val || uartSample.val || "Select a baud rate or click Auto-Detect")
         )
       ),
@@ -986,7 +1004,7 @@ function I2cPanel() {
         div({ class: "panel-hdr" },
           span({ class: "panel-title" }, "GY-511 SENSOR & DAPHNE I²C"),
           span({ class: "panel-meta", style: isGlitch ? "color:var(--state-glitch)" : "color:var(--proto-i2c)" },
-            isGlitch ? "Fault Active -> 9-Clk Recovery" : `400 kHz (${i2cPkts.val} pkts)`)
+            isGlitch ? "Fault Active -> 9-Clk Recovery" : "400 kHz Live")
         ),
         div({ class: "sensor-readout-grid" },
           div({ class: "sensor-metric" },
@@ -1005,7 +1023,7 @@ function I2cPanel() {
         div({ class: "token-stream" },
           span({ class: "tok start" }, "START"),
           span({ class: "tok addr" }, "0x19 W"),
-          span({ class: isGlitch ? "tok nack" : "tok ack" }, isGlitch ? "NACK (Killed)" : "ACK"),
+          span({ class: isGlitch ? "tok nack" : "tok ack" }, isGlitch ? "NACK Killed" : "ACK"),
           span({ class: isGlitch ? "tok rec" : "tok" }, isGlitch ? "9-CLK RECOVERY" : "Reg 0xA8"),
           span({ class: "tok stop" }, "STOP")
         ),
@@ -1022,13 +1040,8 @@ function I2cPanel() {
             ...tipHandlers("Hold SCL low for 50 us to test Daphne clock-stretch tolerance"),
             onclick: () => triggerHardwareCommand("S", "Injected 50 us I²C Clock Stretch", "I2C_STRETCH")
           }, ICONS.cpu(), "Stretch Clock")
-        ),
-        div({ class: () => "flag-box " + (ctfI2c.val ? "captured" : "scrambled") },
-          span({ class: "panel-meta" }, "Daphne I²C Flag"),
-          span({ class: "flag-value" }, () => ctfI2c.val || "Waiting for Daphne I²C beacon...")
         )
-      ),
-      CtfVaultSection()
+      )
     );
   };
 }
@@ -1038,8 +1051,9 @@ function WifiPanel() {
   return () => div({ class: "inspector-body" },
     div({ class: "panel-section" },
       div({ class: "panel-hdr" },
-        span({ class: "panel-title" }, "WI-FI CHANNEL HUNT (1–13)"),
-        span({ class: "panel-meta", style: "color:var(--proto-wifi)" }, `Selected Ch ${wifiChannelMode.val} (SoftAP Ch 6 active)`)
+        span({ class: "panel-title" }, "WI-FI CHANNEL HUNT"),
+        span({ class: "panel-meta", style: "color:var(--proto-wifi)" },
+          wifiChannelMode.val >= 1 ? `Ch ${wifiChannelMode.val} · SoftAP Ch 6` : "SoftAP Ch 6")
       ),
       div({ class: "ch-grid" },
         channels.map(ch => button({
@@ -1048,19 +1062,22 @@ function WifiPanel() {
         }, `Ch ${ch}`))
       ),
       div({ class: () => "flag-box " + (wifiClear.val ? "captured" : "scrambled") },
-        span({ class: "panel-meta" }, () => wifiClear.val ? `Cleartext Flag on Ch ${wifiSampleCh.val}` : `Ch ${wifiSampleCh.val} Capture (Scrambled Decoy)`),
-        span({ class: "flag-value" }, () => (wifiClear.val ? (ctfWifi.val || wifiSample.val) : wifiSample.val) || "Click any channel 1–13 to run a fast off-channel capture burst")
+        span({ class: "panel-meta" }, () => wifiClear.val ? `Message on Ch ${wifiSampleCh.val}` : (wifiSampleCh.val >= 1 ? `Ch ${wifiSampleCh.val} Capture` : "Channel Capture")),
+        span({ class: "flag-value" }, () => (wifiClear.val ? (ctfWifi.val || wifiSample.val) : wifiSample.val) || "Select a channel 1–13 or click Auto-Scan")
       ),
-      div({ style: "display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap" },
+      div({ style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
+        button({
+          class: "cmd-btn",
+          disabled: safetyState.val === "Stopped",
+          ...tipHandlers("Sweep Ch 1–13 automatically until Iris cleartext is captured"),
+          onclick: triggerWifiAutoScan
+        }, ICONS.radar(), "Auto-Scan"),
         button({
           class: "cmd-btn rf-btn",
-          disabled: safetyState.val === "Stopped",
+          disabled: safetyState.val === "Stopped" || wifiChannelMode.val < 1,
           ...tipHandlers("Send targeted Wi-Fi jam burst to Iris on the selected channel; Iris hops if hit"),
           onclick: () => jamWifiChannel(wifiChannelMode.val)
-        }, ICONS.wifi(), () => `Jam Wi-Fi Ch ${wifiChannelMode.val}`),
-        () => ctfWifi.val
-          ? span({ class: "mono", style: "font-size:12px;color:var(--proto-uart);font-weight:700" }, `Unlocked: ${ctfWifi.val}`)
-          : span({ class: "mono", style: "font-size:12px;color:var(--fg-muted)" }, "Find true channel then jam")
+        }, ICONS.wifi(), () => wifiChannelMode.val >= 1 ? `Jam Wi-Fi Ch ${wifiChannelMode.val}` : "Jam Wi-Fi")
       )
     )
   );
@@ -1071,9 +1088,9 @@ function ZigbeePanel() {
   return () => div({ class: "inspector-body" },
     div({ class: "panel-section" },
       div({ class: "panel-hdr" },
-        span({ class: "panel-title" }, "ZIGBEE 802.15.4 HUNT (CH 11–26)"),
+        span({ class: "panel-title" }, "ZIGBEE 802.15.4 HUNT"),
         span({ class: "panel-meta", style: "color:var(--proto-zigbee)" },
-          `Ch ${zigbeeChannel.val} (${2405 + 5 * (zigbeeChannel.val - 11)} MHz)`)
+          zigbeeChannel.val >= 11 ? `Ch ${zigbeeChannel.val} · ${2405 + 5 * (zigbeeChannel.val - 11)} MHz` : "Select Ch 11–26")
       ),
       div({ class: "ch-grid-zigbee" },
         channels.map(ch => button({
@@ -1082,24 +1099,26 @@ function ZigbeePanel() {
         }, `Ch ${ch}`))
       ),
       div({ class: () => "flag-box " + (z154Clear.val ? "captured" : "scrambled") },
-        span({ class: "panel-meta" }, () => z154Clear.val ? `Cleartext Flag on Ch ${zigbeeChannel.val}` : `Ch ${zigbeeChannel.val} Capture (Scrambled Decoy)`),
-        span({ class: "flag-value" }, () => (z154Clear.val ? (ctfZigbee.val || z154Sample.val) : z154Sample.val) || "Hunt across Ch 11–26 to locate Iris")
+        span({ class: "panel-meta" }, () => z154Clear.val ? `Message on Ch ${zigbeeChannel.val}` : (zigbeeChannel.val >= 11 ? `Ch ${zigbeeChannel.val} Capture` : "Channel Capture")),
+        span({ class: "flag-value" }, () => (z154Clear.val ? (ctfZigbee.val || z154Sample.val) : z154Sample.val) || "Select a channel 11–26 or click Auto-Scan")
       ),
-      div({ style: "display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap" },
+      div({ style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
+        button({
+          class: "cmd-btn",
+          disabled: safetyState.val === "Stopped",
+          ...tipHandlers("Sweep Ch 11–26 automatically until Iris cleartext is captured"),
+          onclick: triggerZigbeeAutoScan
+        }, ICONS.radar(), "Auto-Scan"),
         button({
           class: "cmd-btn zigbee-btn",
-          disabled: safetyState.val === "Stopped",
+          disabled: safetyState.val === "Stopped" || zigbeeChannel.val < 11,
           ...tipHandlers("Send targeted 802.15.4 jam frame to Iris on active channel; Iris hops if hit"),
           onclick: jamZigbeeChannel
-        }, ICONS.radio(), () => `Jam Zigbee Ch ${zigbeeChannel.val}`),
-        () => ctfZigbee.val
-          ? span({ class: "mono", style: "font-size:12px;color:var(--proto-uart);font-weight:700" }, `Unlocked: ${ctfZigbee.val}`)
-          : span({ class: "mono", style: "font-size:12px;color:var(--fg-muted)" }, "Find true channel then jam")
+        }, ICONS.radio(), () => zigbeeChannel.val >= 11 ? `Jam Zigbee Ch ${zigbeeChannel.val}` : "Jam Zigbee")
       )
     )
   );
 }
-
 function ContextualInspectorPane() {
   return div({ class: "inspector-pane" },
     () => {
@@ -1146,8 +1165,7 @@ function BottomWiresharkPane() {
       input({
         class: "ws-input",
         type: "text",
-        placeholder: "Search frames (e.g. hestia, 0x19, iris, glitch)...",
-        value: () => filterSearchText.val,
+        placeholder: "Search frames: hestia, 0x19, iris, glitch...",
         oninput: (e) => { filterSearchText.val = e.target.value; }
       }),
       button({
@@ -1256,7 +1274,7 @@ function BottomWiresharkPane() {
           let p = selectedPacket.val;
           return div({ style: "display:flex;flex-direction:column;gap:8px" },
             div({ class: "pkt-detail-hdr" },
-              span({ class: "mono", style: "font-weight:700" }, p ? `Packet #${p.id} (${p.proto}, ${p.len} B)` : "No packet selected"),
+              span({ class: "mono", style: "font-weight:700" }, p ? `Packet #${p.id} · ${p.proto} · ${p.len} B` : "No packet selected"),
               button({
                 class: "cmd-btn",
                 disabled: !p,
@@ -1342,7 +1360,7 @@ function updateFromTelemetry(d) {
 
   if (d.corrupted_frames != null) corruptedCount.val = d.corrupted_frames;
   if (d.wifi_ch != null) wifiActiveCh.val = d.wifi_ch;
-  if (d.wifi_mode != null && d.wifi_mode >= 1 && d.wifi_mode <= 13) wifiChannelMode.val = d.wifi_mode;
+  if (d.wifi_mode != null) wifiChannelMode.val = d.wifi_mode;
   if (d.zigbee_ch != null) zigbeeChannel.val = d.zigbee_ch;
   if (d.uart_baud != null) uartBaud.val = d.uart_baud;
   if (d.uart_clear != null) uartClear.val = d.uart_clear;
@@ -1358,7 +1376,6 @@ function updateFromTelemetry(d) {
 
   if (d.ctf) {
     if (d.ctf.uart) ctfUart.val = d.ctf.uart;
-    if (d.ctf.i2c) ctfI2c.val = d.ctf.i2c;
     if (d.ctf.wifi) ctfWifi.val = d.ctf.wifi;
     if (d.ctf.zigbee) ctfZigbee.val = d.ctf.zigbee;
     if (d.ctf.bonus) ctfBonus.val = d.ctf.bonus;

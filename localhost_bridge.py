@@ -50,9 +50,8 @@ state = {
     "fuzz_cycles": 0,
     "corrupted_frames": 0,
     "wifi_ch": 6,
-    "wifi_mode": 6,
-    "zigbee_ch": 11,
-    "uart_baud": 115200,
+    "wifi_mode": 0,
+    "zigbee_ch": 0,
     "tool_mode": "OFF",
     "safety": "Active",
     "uart_locked": False,
@@ -65,8 +64,7 @@ state = {
     "uart_clear": False,
     "uart_sample": "",
     "wifi_clear": False,
-    "wifi_sample_ch": 6,
-    "wifi_sample": "",
+    "wifi_sample_ch": 0,
     "z154_clear": False,
     "z154_sample": "",
     "ctf": {"uart": "", "i2c": "", "wifi": "", "zigbee": "", "bonus": "", "imask": 0, "emask": 0},
@@ -157,9 +155,9 @@ def wtf_serial_reader():
                 except Exception:
                     pass
             elif "[CTF] BONUS SECRET UNLOCKED" in line:
-                broadcast_ws({"type": "alert", "msg": "All 4 protocols exploited — Bonus Secret Flag unlocked"})
+                broadcast_ws({"type": "alert", "msg": "All 4 protocols verified — Bonus Secret revealed"})
             elif "[SAFETY:ALERT]" in line:
-                broadcast_ws({"type": "alert", "msg": "E-Stop active: whattheflip stopped (stealth mode)"})
+                broadcast_ws({"type": "alert", "msg": "E-Stop active: whattheflip stopped"})
             elif "[SNIFFER:UART] AUTO-DETECT LOCKED:" in line:
                 broadcast_ws({"type": "alert", "msg": line.replace("[SNIFFER:UART] ", "")})
 
@@ -358,6 +356,15 @@ class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
             if "mode" in parts:
                 m = parts["mode"].upper()
                 state["tool_mode"] = m
+                if m == "WIFI":
+                    state["wifi_mode"] = 0
+                    state["wifi_sample_ch"] = 0
+                    state["wifi_clear"] = False
+                    state["wifi_sample"] = ""
+                elif m == "ZIGBEE":
+                    state["zigbee_ch"] = 0
+                    state["z154_clear"] = False
+                    state["z154_sample"] = ""
                 wtf_write_serial(f"MODE:{m.lower()}\n")
             if "baud" in parts:
                 b = parts["baud"]

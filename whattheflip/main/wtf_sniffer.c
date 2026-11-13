@@ -27,6 +27,7 @@
 #include "esp_wifi.h"
 #include "esp_ieee802154.h"
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 #define UART_SNIFFER_PORT       UART_NUM_1
@@ -39,7 +40,7 @@ static const uint8_t s_iris_ap_mac[6]     = {0x02, 0x00, 0x00, 0x00, 0x00, 0x13}
 
 static uint32_t s_wifi_capture_count = 0U;
 static uint32_t s_154_capture_count  = 0U;
-static uint8_t  s_154_channel        = 11U; /* Default Ch 11, no hardcoded Ch 15 lock */
+static uint8_t  s_154_channel        = 0U; /* 0 = Unselected until user picks 11..26 */
 static uint32_t s_i2c_capture_count  = 0U;
 
 /* UART Dynamic Baud Hunting State */
@@ -54,7 +55,7 @@ static volatile bool     s_iris_verified           = false;
 static volatile int64_t  s_last_iris_packet_us     = 0;
 
 /* Wi-Fi Channel Control & Burst Capture State */
-static volatile uint8_t  s_wifi_channel_mode     = SOFTAP_HOME_CHANNEL;
+static volatile uint8_t  s_wifi_channel_mode     = 0U; /* 0 = Unselected until user picks 1..13 */
 static volatile uint8_t  s_current_sniffer_ch    = SOFTAP_HOME_CHANNEL;
 static volatile uint8_t  s_wifi_burst_ch         = SOFTAP_HOME_CHANNEL;
 static volatile bool     s_wifi_burst_pending    = false;
@@ -63,15 +64,14 @@ static volatile bool     s_wifi_burst_got_iris   = false;
 static volatile int64_t  s_last_http_activity_us = 0;
 
 static volatile bool     s_wifi_last_clear       = false;
-static volatile uint8_t  s_wifi_sample_ch        = SOFTAP_HOME_CHANNEL;
+static volatile uint8_t  s_wifi_sample_ch        = 0U;
 static char              s_wifi_last_sample[72]  = "";
 
 static volatile bool     s_154_last_clear        = false;
 static char              s_154_last_sample[72]   = "";
 
-/* Captured CTF Flags & Progress Bitmasks (zero hardcoding: populated only from live captures) */
+/* Captured CTF Messages & Progress Bitmasks (zero hardcoding: populated only from live captures) */
 static char              s_ctf_uart_flag[64]     = "";
-static char              s_ctf_i2c_flag[64]      = "";
 static char              s_ctf_wifi_flag[64]     = "";
 static char              s_ctf_154_flag[64]      = "";
 static char              s_ctf_bonus_flag[64]    = "";
@@ -162,6 +162,13 @@ static bool sniffer_mode_allows(uint8_t proto)
     return false;
 }
 
+EXPORT void wtf_sniffer_reset_154_hunt(void)
+{
+    s_154_channel = 0U;
+    s_154_last_clear = false;
+    s_154_last_sample[0] = '\0';
+}
+
 EXPORT void wtf_sniffer_set_154_channel(uint8_t channel)
 {
     if (channel < 11U || channel > 26U) {
@@ -175,7 +182,6 @@ EXPORT void wtf_sniffer_set_154_channel(uint8_t channel)
     tm_printf((UB *)"[SNIFFER:802154] IEEE 802.15.4 radio tuned to Channel %u (%u MHz)\n",
               (unsigned)channel, (unsigned)(2405U + 5U * (channel - 11U)));
 }
-
 EXPORT uint8_t wtf_sniffer_get_154_channel(void)
 {
     return s_154_channel;
@@ -380,20 +386,9 @@ static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
     uint8_t addr7 = (uint8_t)(bytes[0] >> 1U);
     uint8_t rw    = (uint8_t)(bytes[0] & 1U);
 
-    if (rw == 0U && addr7 == 0x57U && len >= 6U) {
-        /* Daphne's I2C CTF flag beacon on 0x57 */
-        if (sniffer_extract_flag((const char *)&bytes[1], (size_t)(len - 1U), s_ctf_i2c_flag, sizeof(s_ctf_i2c_flag))) {
-            s_intercept_mask |= (1U << 1);
-            sniffer_check_bonus_unlock();
-        }
-        return;
-    }
-
     if (rw == 0U) {
-        /* Master Write: bytes[1] is target register address */
         s_i2c_last_reg = bytes[1];
     } else if (rw == 1U && len >= 7U) {
-        /* Master Read of 6 sensor bytes: bytes[1..6] */
         if (addr7 == 0x19U && (s_i2c_last_reg == 0xA8U || s_i2c_last_reg == 0x28U)) {
             int16_t rx = (int16_t)(((uint16_t)bytes[2] << 8U) | bytes[1]) >> 4;
             int16_t ry = (int16_t)(((uint16_t)bytes[4] << 8U) | bytes[3]) >> 4;
@@ -401,6 +396,8 @@ static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
             s_imu_ax = rx;
             s_imu_ay = ry;
             s_imu_az = rz;
+            s_intercept_mask |= (1U << 1);
+            sniffer_check_bonus_unlock();
         } else if (addr7 == 0x1EU) {
             int16_t mx = (int16_t)(((uint16_t)bytes[1] << 8U) | bytes[2]);
             int16_t mz = (int16_t)(((uint16_t)bytes[3] << 8U) | bytes[4]);
@@ -408,6 +405,8 @@ static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
             s_imu_mx = mx;
             s_imu_my = my;
             s_imu_mz = mz;
+            s_intercept_mask |= (1U << 1);
+            sniffer_check_bonus_unlock();
         }
     }
 }
@@ -425,6 +424,14 @@ EXPORT void wtf_sniffer_get_i2c_imu(int16_t *ax, int16_t *ay, int16_t *az,
 /* --------------------------------------------------------------------------
  * Wi-Fi Channel Control API
  * -------------------------------------------------------------------------- */
+EXPORT void wtf_sniffer_reset_wifi_hunt(void)
+{
+    s_wifi_channel_mode = 0U;
+    s_wifi_sample_ch    = 0U;
+    s_wifi_last_clear   = false;
+    s_wifi_last_sample[0] = '\0';
+}
+
 EXPORT void wtf_sniffer_set_wifi_channel(uint8_t channel)
 {
     wtf_sniffer_request_wifi_burst(channel);
@@ -433,7 +440,7 @@ EXPORT void wtf_sniffer_set_wifi_channel(uint8_t channel)
 EXPORT void wtf_sniffer_request_wifi_burst(uint8_t channel)
 {
     if (channel < 1U || channel > 13U) {
-        channel = SOFTAP_HOME_CHANNEL;
+        return;
     }
     s_wifi_channel_mode = channel;
     s_wifi_burst_ch     = channel;
@@ -444,7 +451,6 @@ EXPORT void wtf_sniffer_request_wifi_burst(uint8_t channel)
     s_wifi_burst_pending  = true;
     tm_printf((UB *)"[SNIFFER:WIFI] Queued fast off-channel capture burst on Ch %u\n", (unsigned)channel);
 }
-
 EXPORT uint8_t wtf_sniffer_get_wifi_channel(void)
 {
     return s_wifi_channel_mode;
@@ -465,15 +471,17 @@ EXPORT void wtf_sniffer_notify_http_activity(void)
  * -------------------------------------------------------------------------- */
 void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *frame_info)
 {
-    if (frame != NULL && frame[0] >= 12U && sniffer_mode_allows(PROTO_IEEE802154)) {
+    uint8_t cur_mode = wtf_discovery_get_tool_mode();
+    bool z_ready = (cur_mode == WTF_TOOL_MODE_AUTO) || (s_154_channel >= 11U && s_154_channel <= 26U);
+    if (frame != NULL && frame[0] >= 12U && sniffer_mode_allows(PROTO_IEEE802154) && z_ready) {
         int64_t now_us = esp_timer_get_time();
         s_154_capture_count++;
 
-        uint8_t payload_len = (uint8_t)(frame[0] - 2U); /* strip 2-byte FCS/RSSI/LQI footer */
+        uint8_t payload_len = (uint8_t)(frame[0] - 2U);
         wtf_record_t rec;
         rec.timestamp_us = (uint32_t)now_us;
         rec.protocol = PROTO_IEEE802154;
-        rec.probe_id = s_154_channel;
+        rec.probe_id = (s_154_channel >= 11U) ? s_154_channel : 11U;
         uint8_t copy_len = (payload_len < WTF_PKT_DATA_MAX) ? payload_len : (WTF_PKT_DATA_MAX - 1);
         rec.length = (uint16_t)copy_len;
         memcpy(rec.data, &frame[1], copy_len);
@@ -482,32 +490,40 @@ void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *fr
             s_last_iris_packet_us = now_us;
             if (frame_info != NULL) {
                 s_iris_rssi = frame_info->rssi;
-                if (s_iris_rssi >= -42) {
-                    s_iris_verified = true;
-                } else if (s_iris_rssi < -55) {
-                    s_iris_verified = false;
-                }
+                if (s_iris_rssi >= -42) s_iris_verified = true;
+                else if (s_iris_rssi < -55) s_iris_verified = false;
             }
             if (payload_len > 10U) {
                 const char *pay = (const char *)&frame[10];
                 size_t plen = (size_t)(payload_len - 9U);
-                if (plen >= 10U && memcmp(pay, "IRIS:154:", 9) == 0) {
-                    char tmp_flag[64];
-                    if (sniffer_extract_flag(pay + 9, plen - 9U, tmp_flag, sizeof(tmp_flag))) {
-                        memcpy(s_ctf_154_flag, tmp_flag, sizeof(s_ctf_154_flag));
-                        memcpy(s_154_last_sample, tmp_flag, sizeof(tmp_flag));
-                        s_154_last_clear = true;
-                        s_intercept_mask |= (1U << 3);
-                        sniffer_check_bonus_unlock();
+                if (plen >= 12U && memcmp(pay, "IRIS:154:", 9) == 0) {
+                    uint8_t tx_ch = (uint8_t)atoi(pay + 9);
+                    const char *colon = memchr(pay + 9, ':', plen - 9U);
+                    if (colon != NULL && (s_154_channel == 0U || tx_ch == s_154_channel)) {
+                        size_t rem_off = (size_t)(colon - pay) + 1U;
+                        char tmp_flag[64];
+                        if (rem_off < plen && sniffer_extract_flag(pay + rem_off, plen - rem_off, tmp_flag, sizeof(tmp_flag))) {
+                            memcpy(s_ctf_154_flag, tmp_flag, sizeof(s_ctf_154_flag));
+                            memcpy(s_154_last_sample, tmp_flag, sizeof(tmp_flag));
+                            s_154_last_clear = true;
+                            s_intercept_mask |= (1U << 3);
+                            sniffer_check_bonus_unlock();
+                        }
                     }
-                } else if (plen >= 11U && memcmp(pay, "IRIS:SCRM:", 10) == 0) {
-                    sniffer_sanitize_sample(s_154_last_sample, sizeof(s_154_last_sample),
-                                            (const uint8_t *)(pay + 10), plen - 10U);
-                    s_154_last_clear = false;
+                } else if (plen >= 13U && memcmp(pay, "IRIS:SCRM:", 10) == 0) {
+                    uint8_t tx_ch = (uint8_t)atoi(pay + 10);
+                    const char *colon = memchr(pay + 10, ':', plen - 10U);
+                    if (colon != NULL && (s_154_channel == 0U || tx_ch == s_154_channel)) {
+                        size_t rem_off = (size_t)(colon - pay) + 1U;
+                        if (rem_off < plen) {
+                            sniffer_sanitize_sample(s_154_last_sample, sizeof(s_154_last_sample),
+                                                    (const uint8_t *)(pay + rem_off), plen - rem_off);
+                            s_154_last_clear = false;
+                        }
+                    }
                 }
             }
         }
-
         if (g_mbf_storage > 0) {
             (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
         }
@@ -588,33 +604,43 @@ static void wifi_promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         if (s_iris_rssi >= -42) s_iris_verified = true;
         else if (s_iris_rssi < -55) s_iris_verified = false;
 
-        /* Only update Wi-Fi hunt sample during an active burst or when user selected home Ch 6 */
-        uint8_t rx_ch = (uint8_t)pkt->rx_ctrl.channel;
-        uint8_t target_ch = s_wifi_burst_active ? s_wifi_burst_ch : s_current_sniffer_ch;
-        bool accept_sample = (s_wifi_burst_active && (rx_ch == s_wifi_burst_ch || rx_ch == 0U)) ||
-                             (!s_wifi_burst_active && s_wifi_channel_mode == SOFTAP_HOME_CHANNEL && rx_ch == SOFTAP_HOME_CHANNEL);
-        if (accept_sample) {
-            if (wifi_tag_pos >= 0) {
-                char tmp_flag[64];
-                if (sniffer_extract_flag((const char *)&pkt->payload[wifi_tag_pos + 10],
-                                         (size_t)(copy_len - (wifi_tag_pos + 10)),
-                                         tmp_flag, sizeof(tmp_flag))) {
-                    memcpy(s_ctf_wifi_flag, tmp_flag, sizeof(s_ctf_wifi_flag));
-                    memcpy(s_wifi_last_sample, tmp_flag, sizeof(tmp_flag));
-                    s_wifi_last_clear = true;
-                    s_wifi_sample_ch = target_ch;
-                    s_intercept_mask |= (1U << 2);
-                    sniffer_check_bonus_unlock();
-                    if (s_wifi_burst_active) s_wifi_burst_got_iris = true;
+        /* Only update Wi-Fi hunt sample during an explicit user burst and matching Iris TX channel */
+        if (s_wifi_burst_active) {
+            if (wifi_tag_pos >= 0 && (wifi_tag_pos + 12) <= (int)copy_len) {
+                const char *after = (const char *)&pkt->payload[wifi_tag_pos + 10];
+                size_t rem_len = (size_t)(copy_len - (wifi_tag_pos + 10));
+                uint8_t tx_ch = (uint8_t)atoi(after);
+                const char *colon = memchr(after, ':', rem_len);
+                if (colon != NULL && tx_ch == s_wifi_burst_ch) {
+                    size_t off = (size_t)(colon - after) + 1U;
+                    char tmp_flag[64];
+                    if (off < rem_len && sniffer_extract_flag(after + off, rem_len - off, tmp_flag, sizeof(tmp_flag))) {
+                        memcpy(s_ctf_wifi_flag, tmp_flag, sizeof(s_ctf_wifi_flag));
+                        memcpy(s_wifi_last_sample, tmp_flag, sizeof(tmp_flag));
+                        s_wifi_last_clear = true;
+                        s_wifi_sample_ch = s_wifi_burst_ch;
+                        s_intercept_mask |= (1U << 2);
+                        sniffer_check_bonus_unlock();
+                        s_wifi_burst_got_iris = true;
+                    }
                 }
-            } else if (scrm_tag_pos >= 0) {
-                size_t rem = (size_t)(copy_len - (scrm_tag_pos + 10));
-                if (rem > 24U) rem = 24U;
-                sniffer_sanitize_sample(s_wifi_last_sample, sizeof(s_wifi_last_sample),
-                                        &pkt->payload[scrm_tag_pos + 10], rem);
-                s_wifi_last_clear = false;
-                s_wifi_sample_ch = target_ch;
-                if (s_wifi_burst_active) s_wifi_burst_got_iris = true;
+            } else if (scrm_tag_pos >= 0 && (scrm_tag_pos + 13) <= (int)copy_len) {
+                const char *after = (const char *)&pkt->payload[scrm_tag_pos + 10];
+                size_t rem_len = (size_t)(copy_len - (scrm_tag_pos + 10));
+                uint8_t tx_ch = (uint8_t)atoi(after);
+                const char *colon = memchr(after, ':', rem_len);
+                if (colon != NULL && tx_ch == s_wifi_burst_ch) {
+                    size_t off = (size_t)(colon - after) + 1U;
+                    size_t take = (rem_len > off) ? (rem_len - off) : 0U;
+                    if (take > 24U) take = 24U;
+                    if (take > 0U) {
+                        sniffer_sanitize_sample(s_wifi_last_sample, sizeof(s_wifi_last_sample),
+                                                (const uint8_t *)(after + off), take);
+                        s_wifi_last_clear = false;
+                        s_wifi_sample_ch = s_wifi_burst_ch;
+                        s_wifi_burst_got_iris = true;
+                    }
+                }
             }
         }
     }
@@ -672,11 +698,11 @@ static void sniffer_wireless_init(void)
     tm_printf((UB *)"[SNIFFER:WIRELESS] Wi-Fi promiscuous mode (filt=%d cb=%d en=%d)\n", (int)e1, (int)e2, (int)e3);
 
     esp_ieee802154_enable();
-    esp_ieee802154_set_channel(s_154_channel);
+    esp_ieee802154_set_channel(11U);
     esp_ieee802154_set_promiscuous(true);
     esp_ieee802154_set_rx_when_idle(true);
     esp_ieee802154_receive();
-    tm_printf((UB *)"[SNIFFER:WIRELESS] IEEE 802.15.4 RX ENABLED on Channel %u\n", (unsigned)s_154_channel);
+    tm_printf((UB *)"[SNIFFER:WIRELESS] IEEE 802.15.4 RX ENABLED\n");
 }
 /* --------------------------------------------------------------------------
  * Main Sniffer Task Entry Point
@@ -848,7 +874,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                 rec.length = (uint16_t)flen;
                 memcpy(rec.data, local_bytes, flen);
 
-                if ((s_i2c_capture_count % 2U) == 1U || (local_bytes[0] >> 1U) == 0x57U) {
+                if ((s_i2c_capture_count % 2U) == 1U) {
                     if (g_mbf_storage > 0) (void)tk_snd_mbf(g_mbf_storage, &rec, sizeof(rec), TMO_POL);
                 }
                 if (g_mbf_telemetry > 0) (void)tk_snd_mbf(g_mbf_telemetry, &rec, sizeof(rec), TMO_POL);
@@ -889,11 +915,11 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             if (cur_mode_rf == WTF_TOOL_MODE_WIFI) {
                 (void)esp_ieee802154_sleep();
             } else if (cur_mode_rf == WTF_TOOL_MODE_ZIGBEE || cur_mode_rf == WTF_TOOL_MODE_AUTO) {
-                (void)esp_ieee802154_set_channel(s_154_channel);
+                uint8_t zt = (s_154_channel >= 11U && s_154_channel <= 26U) ? s_154_channel : 11U;
+                (void)esp_ieee802154_set_channel(zt);
                 (void)esp_ieee802154_receive();
             }
         }
-
         tk_dly_tsk(10);
     }
 }
@@ -927,7 +953,7 @@ EXPORT void wtf_sniffer_get_ctf_snapshot(
     if (z154_clear) *z154_clear = s_154_last_clear;
 
     if (flag_uart && flag_sz) { strncpy(flag_uart, s_ctf_uart_flag, flag_sz - 1U); flag_uart[flag_sz - 1U] = '\0'; }
-    if (flag_i2c  && flag_sz) { strncpy(flag_i2c,  s_ctf_i2c_flag,  flag_sz - 1U); flag_i2c[flag_sz - 1U]  = '\0'; }
+    if (flag_i2c  && flag_sz) { flag_i2c[0] = '\0'; }
     if (flag_wifi && flag_sz) { strncpy(flag_wifi, s_ctf_wifi_flag, flag_sz - 1U); flag_wifi[flag_sz - 1U] = '\0'; }
     if (flag_z154 && flag_sz) { strncpy(flag_z154, s_ctf_154_flag,  flag_sz - 1U); flag_z154[flag_sz - 1U] = '\0'; }
     if (flag_bonus && flag_sz) { strncpy(flag_bonus, s_ctf_bonus_flag, flag_sz - 1U); flag_bonus[flag_sz - 1U] = '\0'; }

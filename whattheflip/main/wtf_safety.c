@@ -67,10 +67,10 @@ static void ws2812_send_byte(uint8_t val)
             t_start = esp_cpu_get_cycle_count();
             while ((esp_cpu_get_cycle_count() - t_start) < 96U) {}
         } else {
-            /* Bit 0: High ~350 ns (56 cycles @ 160 MHz), Low ~800 ns (128 cycles) */
+            /* Bit 0: High ~180 ns (22 cycles @ 160 MHz + APB write), Low ~800 ns */
             GPIO.out_w1ts.val = (1UL << WTF_PIN_NEOPIXEL);
             uint32_t t_start = esp_cpu_get_cycle_count();
-            while ((esp_cpu_get_cycle_count() - t_start) < 56U) {}
+            while ((esp_cpu_get_cycle_count() - t_start) < 22U) {}
             GPIO.out_w1tc.val = (1UL << WTF_PIN_NEOPIXEL);
             t_start = esp_cpu_get_cycle_count();
             while ((esp_cpu_get_cycle_count() - t_start) < 128U) {}
@@ -113,7 +113,8 @@ static void safety_apply_stealth_leds(bool stealth)
             gpio_pullup_dis(p);
             gpio_pulldown_dis(p);
         }
-        /* Drive NeoPixel data line LOW after sending (0,0,0) */
+        /* Send (0,0,0) twice and drive NeoPixel data line LOW */
+        wtf_safety_neopixel_set_color(0, 0, 0);
         wtf_safety_neopixel_set_color(0, 0, 0);
         GPIO.out_w1tc.val = (1UL << WTF_PIN_NEOPIXEL);
     } else {

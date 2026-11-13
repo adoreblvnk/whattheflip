@@ -16,6 +16,7 @@ EXPORT void    wtf_sniffer_set_wifi_channel(uint8_t channel);
 EXPORT void    wtf_sniffer_request_wifi_burst(uint8_t channel);
 EXPORT uint8_t wtf_sniffer_get_wifi_channel(void);
 EXPORT uint8_t wtf_sniffer_get_wifi_mode(void);
+EXPORT void    wtf_sniffer_reset_wifi_hunt(void);
 
 /* UART Dynamic Baud-Rate Hunting (9600, 38400, 57600, 115200) */
 EXPORT void     wtf_sniffer_set_uart_baud(uint32_t baud);
@@ -25,6 +26,7 @@ EXPORT void     wtf_sniffer_request_uart_autodetect(void);
 /* IEEE 802.15.4 / Zigbee Channel Control (11..26) */
 EXPORT void    wtf_sniffer_set_154_channel(uint8_t channel);
 EXPORT uint8_t wtf_sniffer_get_154_channel(void);
+EXPORT void    wtf_sniffer_reset_154_hunt(void);
 
 /* Notify sniffer of active HTTP/PCAP client transfer to hold SoftAP home channel */
 EXPORT void    wtf_sniffer_notify_http_activity(void);

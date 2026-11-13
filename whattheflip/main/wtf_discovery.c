@@ -8,6 +8,7 @@
  */
 
 #include "wtf_discovery.h"
+#include "wtf_sniffer.h"
 #include "esp_timer.h"
 #include "esp_rom_gpio.h"
 #include "soc/gpio_sig_map.h"
@@ -61,13 +62,14 @@ EXPORT void wtf_discovery_set_tool_mode(uint8_t mode)
             break;
         case WTF_TOOL_MODE_WIFI:
             s_manual_lock = true;
+            wtf_sniffer_reset_wifi_hunt();
             tm_printf((UB *)"[DISCOVERY] MODE: Wi-Fi 6 802.11 Monitor\n");
             break;
         case WTF_TOOL_MODE_ZIGBEE:
             s_manual_lock = true;
+            wtf_sniffer_reset_154_hunt();
             tm_printf((UB *)"[DISCOVERY] MODE: Zigbee IEEE 802.15.4 Sniffer\n");
             break;
-        case WTF_TOOL_MODE_AUTO:
         default:
             s_manual_lock = false;
             tm_printf((UB *)"[DISCOVERY] MODE: AUTO (Auto-Discovery Active)\n");

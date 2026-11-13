@@ -198,29 +198,6 @@ input:focus-visible {
   color: var(--fg-primary);
 }
 
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-chip);
-  font-weight: 700;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--proto-uart-bg);
-  color: var(--proto-uart);
-}
-.status-pill.stopped {
-  background: var(--state-glitch-bg);
-  color: var(--state-glitch);
-}
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
 /* Unified Button Vocabulary */
 .cmd-btn {
   display: inline-flex;
