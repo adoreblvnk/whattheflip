@@ -31,7 +31,7 @@
 
 #define HESTIA_BUF_SIZE         80
 #define HESTIA_BURST_LEN        16
-#define HESTIA_FLAG_STR         "WTF{keep_your_hands_off_my_altar}"
+#define HESTIA_FLAG_STR         "WTF{hands_off_the_altar}"
 
 /* RP2040 Hardware Random & Timer Registers for dynamic boot baud selection */
 #define RP2040_ROSC_RANDOMBIT   0x4006001CUL
@@ -181,7 +181,7 @@ LOCAL void hestia_uart_hw_init(void)
 LOCAL int hestia_format_packet(char *buf, uint32_t counter, uint16_t checksum)
 {
     /* Deterministic formatting without libc sprintf allocation:
-     * "HESTIA:<counter>:<checksum>:WTF{keep_your_hands_off_my_altar}\n"
+     * "HESTIA:<counter>:<checksum>:WTF{hands_off_the_altar}\n"
      */
     const char prefix[] = "HESTIA:";
     int idx = 0;

@@ -445,9 +445,11 @@ static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
             int16_t rx = (int16_t)(((uint16_t)bytes[2] << 8U) | bytes[1]) >> 4;
             int16_t ry = (int16_t)(((uint16_t)bytes[4] << 8U) | bytes[3]) >> 4;
             int16_t rz = (int16_t)(((uint16_t)bytes[6] << 8U) | bytes[5]) >> 4;
-            s_imu_ax = rx;
-            s_imu_ay = ry;
-            s_imu_az = rz;
+            if (rx != 0 || ry != 0 || rz != 0) {
+                s_imu_ax = rx;
+                s_imu_ay = ry;
+                s_imu_az = rz;
+            }
             s_intercept_mask |= (1U << 1);
             sniffer_check_bonus_unlock();
         } else if (addr7 == 0x1EU) {

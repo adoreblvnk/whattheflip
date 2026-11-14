@@ -514,12 +514,24 @@ static size_t fat32_read_chain(uint32_t start_clus, uint32_t file_size,
     return copied;
 }
 
+/* 1-entry cache for /WWW/ lookups so chunked HTTP reads avoid re-reading directory sectors */
+static uint8_t  s_www_cache_name[11];
+static uint32_t s_www_cache_clus = 0U;
+static uint32_t s_www_cache_size = 0U;
+
+static void fat32_invalidate_www_cache(void)
+{
+    s_www_cache_clus = 0U;
+    s_www_cache_size = 0U;
+}
+
 /* Ensure or pre-seed a file inside /WWW/ directory */
 static void fat32_ensure_www_file(const uint8_t name83[11], const uint8_t *seed_data, uint32_t seed_len)
 {
     if (!s_fat.mounted || s_fat.www_dir_clus < 2U || seed_data == NULL || seed_len == 0U) {
         return;
     }
+    fat32_invalidate_www_cache();
 
     uint32_t dir_lba = clus_to_lba(s_fat.www_dir_clus);
     if (!sd_read_sector(dir_lba, s_sector_scratch)) {
@@ -770,6 +782,11 @@ static bool fat32_find_www_entry(const uint8_t name83[11], uint32_t *out_clus, u
     if (!s_fat.mounted || s_fat.www_dir_clus < 2U || name83 == NULL) {
         return false;
     }
+    if (s_www_cache_clus >= 2U && s_www_cache_size > 0U && memcmp(s_www_cache_name, name83, 11) == 0) {
+        *out_clus = s_www_cache_clus;
+        *out_size = s_www_cache_size;
+        return true;
+    }
 
     uint32_t lba = clus_to_lba(s_fat.www_dir_clus);
     if (!sd_read_sector(lba, s_sector_scratch)) {
@@ -778,9 +795,17 @@ static bool fat32_find_www_entry(const uint8_t name83[11], uint32_t *out_clus, u
     fat32_dirent_t *entries = (fat32_dirent_t *)s_sector_scratch;
     for (int i = 0; i < 16; i++) {
         if (memcmp(entries[i].name, name83, 11) == 0 && (entries[i].attr & 0x10U) == 0U) {
-            *out_clus = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
-            *out_size = entries[i].file_size;
-            return (*out_clus >= 2U && *out_size > 0U);
+            uint32_t clus = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
+            uint32_t sz   = entries[i].file_size;
+            if (clus >= 2U && sz > 0U) {
+                memcpy(s_www_cache_name, name83, 11);
+                s_www_cache_clus = clus;
+                s_www_cache_size = sz;
+                *out_clus = clus;
+                *out_size = sz;
+                return true;
+            }
+            return false;
         }
     }
     return false;
@@ -905,7 +930,9 @@ EXPORT void wtf_storage_task(INT stacd, void *exinf)
                             }
                             s_fat.file_clus_sec_idx = 0U;
                         }
-                        fat32_update_filesize(s_total_pcap_bytes);
+                        if ((s_total_pcap_bytes - s_fat.file_size_bytes) >= 4096U) {
+                            fat32_update_filesize(s_total_pcap_bytes);
+                        }
                     }
                 }
                 s_buf_flushed_pos += 512U;
@@ -916,15 +943,17 @@ EXPORT void wtf_storage_task(INT stacd, void *exinf)
                           (unsigned)s_total_records, rec.protocol, (unsigned)rec.length, (unsigned)rec.timestamp_us);
             }
         } else {
-            /* Queue idle: flush partial sector to disk and update directory file size */
-            if (s_fat.mounted && !wtf_safety_is_aborted() && (s_buf_write_pos > s_buf_flushed_pos)) {
-                uint32_t unflushed = s_buf_write_pos - s_buf_flushed_pos;
-                if (unflushed < 512U) {
-                    memcpy(s_sector_scratch, &s_pcap_buf[s_buf_flushed_pos], unflushed);
-                    uint32_t lba = clus_to_lba(s_fat.file_curr_clus) + s_fat.file_clus_sec_idx;
-                    (void)sd_write_sector(lba, s_sector_scratch);
-                    fat32_update_filesize(s_total_pcap_bytes);
+            /* Queue idle: flush partial sector only when new bytes arrived since last sync */
+            if (s_fat.mounted && !wtf_safety_is_aborted() && (s_total_pcap_bytes != s_fat.file_size_bytes)) {
+                if (s_buf_write_pos > s_buf_flushed_pos) {
+                    uint32_t unflushed = s_buf_write_pos - s_buf_flushed_pos;
+                    if (unflushed < 512U) {
+                        memcpy(s_sector_scratch, &s_pcap_buf[s_buf_flushed_pos], unflushed);
+                        uint32_t lba = clus_to_lba(s_fat.file_curr_clus) + s_fat.file_clus_sec_idx;
+                        (void)sd_write_sector(lba, s_sector_scratch);
+                    }
                 }
+                fat32_update_filesize(s_total_pcap_bytes);
             }
         }
 

@@ -73,7 +73,7 @@ static esp_err_t serve_sd_www_asset(httpd_req_t *req, const uint8_t name83[11],
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     }
 
-    static uint8_t s_www_sector[512];
+    static uint8_t s_www_sector[4096];
     size_t offset = 0U;
     while (offset < sd_sz) {
         size_t to_read = sd_sz - offset;

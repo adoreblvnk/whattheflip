@@ -23,6 +23,7 @@ import http.server
 import json
 import os
 import re
+import signal
 import socketserver
 import struct
 import threading
@@ -77,6 +78,8 @@ ser_iris = None
 ser_lock = threading.Lock()
 ws_clients: Set = set()
 ws_event_loop = None
+stop_event = threading.Event()
+http_server = None
 
 pcap_records = bytearray()
 pcap_lock = threading.Lock()
@@ -126,7 +129,7 @@ def wtf_write_serial(line_str: str) -> bool:
 
 def wtf_serial_reader():
     global ser_wtf
-    while True:
+    while not stop_event.is_set():
         try:
             if ser_wtf is None:
                 ser_wtf = serial.Serial(PORT_WTF, 115200, timeout=0.2)
@@ -158,8 +161,12 @@ def wtf_serial_reader():
                 try:
                     j = json.loads(line[len("[DASHBOARD:JSON] "):])
                     for k, v in j.items():
-                        if k != "pcap_bytes":
-                            state[k] = v
+                        if k == "pcap_bytes":
+                            continue
+                        if k in ("accel", "mag") and isinstance(v, dict):
+                            if v.get("x", 0) == 0 and v.get("y", 0) == 0 and v.get("z", 0) == 0:
+                                continue
+                        state[k] = v
                 except Exception:
                     pass
             elif line.startswith("[PCAP:PKT] "):
@@ -181,8 +188,13 @@ def wtf_serial_reader():
 
         except Exception:
             ser_wtf = None
-            time.sleep(1.0)
-
+            stop_event.wait(1.0)
+    if ser_wtf is not None:
+        try:
+            ser_wtf.close()
+        except Exception:
+            pass
+        ser_wtf = None
 
 def find_daphne_port():
     for p in sorted(glob.glob("/dev/cu.usbmodem*")):
@@ -203,25 +215,29 @@ def find_daphne_port():
 def daphne_serial_reader():
     global ser_daphne
     port = None
-    while True:
+    gy511_printed = False
+    while not stop_event.is_set():
         try:
             if ser_daphne is None:
                 if port is None:
                     port = find_daphne_port()
                 if port is None:
-                    time.sleep(2.0)
+                    stop_event.wait(2.0)
                     continue
                 ser_daphne = serial.Serial(port, 115200, timeout=0.2)
+                gy511_printed = False
                 print(f"[BRIDGE] Connected to daphne on {port}")
-
             line = ser_daphne.readline().decode("utf-8", errors="replace").strip()
             if not line:
                 continue
 
             m_accel = re.search(r"ACCEL mg:\s*X=(-?\d+)\s*Y=(-?\d+)\s*Z=(-?\d+)", line)
             if m_accel:
-                state["accel"] = {"x": int(m_accel.group(1)), "y": int(m_accel.group(2)), "z": int(m_accel.group(3))}
-
+                ax, ay, az = int(m_accel.group(1)), int(m_accel.group(2)), int(m_accel.group(3))
+                state["accel"] = {"x": ax, "y": ay, "z": az}
+                if not gy511_printed:
+                    gy511_printed = True
+                    print(f"[BRIDGE] GY-511: X={ax} Y={ay} Z={az} mg")
             m_mag = re.search(r"MAG:\s*X=(-?\d+)\s*Y=(-?\d+)\s*Z=(-?\d+)", line)
             if m_mag:
                 state["mag"] = {"x": int(m_mag.group(1)), "y": int(m_mag.group(2)), "z": int(m_mag.group(3))}
@@ -229,12 +245,17 @@ def daphne_serial_reader():
         except Exception:
             ser_daphne = None
             port = None
-            time.sleep(1.5)
-
+            stop_event.wait(1.5)
+    if ser_daphne is not None:
+        try:
+            ser_daphne.close()
+        except Exception:
+            pass
+        ser_daphne = None
 
 def iris_serial_reader():
     global ser_iris
-    while True:
+    while not stop_event.is_set():
         try:
             if ser_iris is None:
                 ser_iris = serial.Serial()
@@ -253,8 +274,13 @@ def iris_serial_reader():
                 broadcast_ws({"type": "alert", "msg": line})
         except Exception:
             ser_iris = None
-            time.sleep(1.5)
-
+            stop_event.wait(1.5)
+    if ser_iris is not None:
+        try:
+            ser_iris.close()
+        except Exception:
+            pass
+        ser_iris = None
 
 async def ws_handler(websocket):
     ws_clients.add(websocket)
@@ -266,12 +292,15 @@ async def ws_handler(websocket):
         ws_clients.discard(websocket)
 
 
-async def telemetry_broadcaster():
-    while True:
-        await asyncio.sleep(0.5)
+async def telemetry_broadcaster(async_stop: asyncio.Event):
+    while not async_stop.is_set():
+        try:
+            await asyncio.wait_for(async_stop.wait(), timeout=0.5)
+            break
+        except asyncio.TimeoutError:
+            pass
         if ws_clients:
             broadcast_ws(state)
-
 
 class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -444,25 +473,57 @@ class BridgeHttpHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def start_http_server():
+    global http_server
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", HTTP_PORT), BridgeHttpHandler) as httpd:
+        http_server = httpd
         httpd.serve_forever()
 
 
 async def main_async():
     global ws_event_loop
     ws_event_loop = asyncio.get_running_loop()
+    async_stop = asyncio.Event()
+
+    def _request_stop():
+        stop_event.set()
+        async_stop.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            ws_event_loop.add_signal_handler(sig, _request_stop)
+        except NotImplementedError:
+            pass
+
     async with websockets.serve(ws_handler, "localhost", WS_PORT):
         print(f"WHATTHEFLIP // LOCALHOST BRIDGE ACTIVE on http://localhost:{HTTP_PORT}")
-        await telemetry_broadcaster()
+        await telemetry_broadcaster(async_stop)
+
+    print("\n[BRIDGE] Shutting down...")
+    if http_server is not None:
+        http_server.shutdown()
 
 
 def main():
-    threading.Thread(target=wtf_serial_reader, daemon=True).start()
-    threading.Thread(target=daphne_serial_reader, daemon=True).start()
-    threading.Thread(target=iris_serial_reader, daemon=True).start()
-    threading.Thread(target=start_http_server, daemon=True).start()
-    asyncio.run(main_async())
+    threads = [
+        threading.Thread(target=wtf_serial_reader, daemon=True),
+        threading.Thread(target=daphne_serial_reader, daemon=True),
+        threading.Thread(target=iris_serial_reader, daemon=True),
+        threading.Thread(target=start_http_server, daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        stop_event.set()
+        if http_server is not None:
+            http_server.shutdown()
+    finally:
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=1.0)
+        print("[BRIDGE] Stopped.")
 
 
 if __name__ == "__main__":

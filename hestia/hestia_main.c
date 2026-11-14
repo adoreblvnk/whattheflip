@@ -48,7 +48,7 @@ EXPORT INT usermain(void)
     tm_printf((UB *)"\n==================================================\n");
     tm_printf((UB *)"  HESTIA - Victim A Firmware (µT-Kernel 3.0 SMP) \n");
     tm_printf((UB *)"  Core 0: UART0 TX (GP0 @ Dynamic Baud, Rate Agility)\n");
-    tm_printf((UB *)"  CTF: WTF{keep_your_hands_off_my_altar}             \n");
+    tm_printf((UB *)"  CTF: WTF{hands_off_the_altar}                      \n");
     tm_printf((UB *)"==================================================\n");
     if (!make_task("UART_TX", &uart_tid, &ctsk_uart)) {
         return 1;

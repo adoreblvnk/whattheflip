@@ -32,8 +32,10 @@
 #define IRIS_SHORT_ADDR         0x0003
 #define IRIS_STATUS_GPIO        GPIO_NUM_8
 
-#define IRIS_WIFI_FLAG          "WTF{3_women_who_told_apollo_to_get_out}"
+#define IRIS_WIFI_FLAG          "WTF{tell_apollo_to_get_out}"
+#define IRIS_WIFI_EVADE_FLAG    "WTF{nonchalant_and_6_ft}"
 #define IRIS_154_FLAG           "WTF{i_carry_your_messages_not_your_sins}"
+#define IRIS_154_EVADE_FLAG     "WTF{wheresmywater}"
 
 /* Dynamic Cat-and-Mouse RF State */
 static volatile uint32_t s_tx_period_ms    = 30;
@@ -42,6 +44,8 @@ static volatile uint8_t  s_true_154_ch     = 15;
 static volatile uint32_t s_ota_cmd_count   = 0;
 static volatile bool     s_wifi_jammed     = false;
 static volatile bool     s_154_jammed      = false;
+static volatile bool     s_wifi_evaded     = false;
+static volatile bool     s_154_evaded      = false;
 static volatile bool     s_espnow_done     = true;
 static volatile uint32_t s_espnow_cb_cnt   = 0;
 static volatile bool     s_154_tx_done     = true;
@@ -61,7 +65,8 @@ static void iris_update_beacon_ie(void)
     vnd_buf[0] = 0xDD;
     vnd_buf[2] = 0x02; vnd_buf[3] = 0x00; vnd_buf[4] = 0x03;
     vnd_buf[5] = s_true_wifi_ch;
-    int n = snprintf((char *)&vnd_buf[6], sizeof(vnd_buf) - 6U, "IRIS:WIFI:%u:%s", (unsigned)s_true_wifi_ch, IRIS_WIFI_FLAG);
+    const char *wflag = s_wifi_evaded ? IRIS_WIFI_EVADE_FLAG : IRIS_WIFI_FLAG;
+    int n = snprintf((char *)&vnd_buf[6], sizeof(vnd_buf) - 6U, "IRIS:WIFI:%u:%s", (unsigned)s_true_wifi_ch, wflag);
     size_t plen = (n > 0) ? (size_t)n : 0U;
     vnd_buf[1] = (uint8_t)(4U + plen);
     (void)esp_wifi_set_vendor_ie(false, WIFI_VND_IE_TYPE_BEACON, WIFI_VND_IE_ID_0, NULL);
@@ -268,7 +273,8 @@ static esp_err_t iris_send_wifi_frame(uint8_t ch, bool is_true_ch, uint32_t seq)
     size_t pay_len = 0;
 
     if (is_true_ch) {
-        int n = snprintf((char *)payload, sizeof(payload), "IRIS:WIFI:%u:%s", (unsigned)ch, IRIS_WIFI_FLAG);
+        const char *wflag = s_wifi_evaded ? IRIS_WIFI_EVADE_FLAG : IRIS_WIFI_FLAG;
+        int n = snprintf((char *)payload, sizeof(payload), "IRIS:WIFI:%u:%s", (unsigned)ch, wflag);
         pay_len = (n > 0) ? (size_t)n : 0U;
     } else {
         int n = snprintf((char *)payload, sizeof(payload), "IRIS:SCRM:%u:", (unsigned)ch);
@@ -295,7 +301,8 @@ static esp_err_t iris_send_154_frame(uint8_t ch, bool is_true_ch, uint8_t seq)
     size_t plen = 0;
 
     if (is_true_ch) {
-        int n = snprintf(payload, sizeof(payload), "IRIS:154:%u:%s", (unsigned)ch, IRIS_154_FLAG);
+        const char *zflag = s_154_evaded ? IRIS_154_EVADE_FLAG : IRIS_154_FLAG;
+        int n = snprintf(payload, sizeof(payload), "IRIS:154:%u:%s", (unsigned)ch, zflag);
         plen = (n > 0) ? (size_t)n : 0U;
     } else {
         int n = snprintf(payload, sizeof(payload), "IRIS:SCRM:%u:", (unsigned)ch);
@@ -354,6 +361,7 @@ static void task_iris_transmitter(INT stacd, void *exinf)
         /* Handle jam-triggered channel hopping */
         if (s_wifi_jammed) {
             s_wifi_jammed = false;
+            s_wifi_evaded = true;
             uint8_t old_ch = s_true_wifi_ch;
             s_true_wifi_ch = iris_pick_new_channel(1U, 13U, old_ch);
             (void)esp_wifi_set_channel(s_true_wifi_ch, WIFI_SECOND_CHAN_NONE);
@@ -363,6 +371,7 @@ static void task_iris_transmitter(INT stacd, void *exinf)
         }
         if (s_154_jammed) {
             s_154_jammed = false;
+            s_154_evaded = true;
             uint8_t old_ch = s_true_154_ch;
             s_true_154_ch = iris_pick_new_channel(11U, 26U, old_ch);
             (void)esp_ieee802154_set_channel(s_true_154_ch);
