@@ -298,97 +298,161 @@ static volatile int16_t s_imu_az = 0;
 static volatile int16_t s_imu_mx = 0;
 static volatile int16_t s_imu_my = 0;
 static volatile int16_t s_imu_mz = 0;
-/* IRAM ISR on Probe 2 (SDA, GPIO6): Detects START and STOP conditions when SCL is HIGH */
-static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
-{
-    (void)arg;
-    uint32_t gpio_in = GPIO.in.val;
-    uint32_t scl = (gpio_in >> WTF_PIN_PROBE3_SCL) & 1U;
-    if (scl == 0U) {
-        return; /* Data transitions while SCL is LOW are normal bit changes */
-    }
+static volatile bool s_i2c_capture_enabled = false;
 
-    uint32_t sda = (gpio_in >> WTF_PIN_PROBE2_SDA) & 1U;
-    if (sda == 0U) {
-        /* START or Repeated START condition (SDA falling while SCL HIGH) */
-        if (s_i2c_in_frame && (s_i2c_byte_cnt > 0U || s_i2c_bit_idx >= 4U)) {
-            if (s_i2c_byte_cnt == 0U) {
-                s_i2c_work_buf[0] = s_i2c_curr_byte;
-                s_i2c_byte_cnt = 1U;
-            }
-            uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
-            if (next_head != s_i2c_ring_tail) {
-                s_i2c_ring[s_i2c_ring_head].timestamp_us = s_i2c_start_us;
-                s_i2c_ring[s_i2c_ring_head].length = s_i2c_byte_cnt;
-                for (uint8_t i = 0U; i < s_i2c_byte_cnt; i++) {
-                    s_i2c_ring[s_i2c_ring_head].bytes[i] = s_i2c_work_buf[i];
-                }
-                s_i2c_ring_head = next_head;
-            }
+static inline void IRAM_ATTR i2c_ring_push_frame(uint32_t ts_us, const uint8_t *buf, uint8_t len)
+{
+    if (len == 0U) {
+        return;
+    }
+    uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
+    if (next_head != s_i2c_ring_tail) {
+        s_i2c_ring[s_i2c_ring_head].timestamp_us = ts_us;
+        s_i2c_ring[s_i2c_ring_head].length = len;
+        for (uint8_t i = 0U; i < len; i++) {
+            s_i2c_ring[s_i2c_ring_head].bytes[i] = buf[i];
         }
-        s_i2c_in_frame  = true;
-        s_i2c_bit_idx   = 0U;
-        s_i2c_curr_byte = 0U;
-        s_i2c_byte_cnt  = 0U;
-        s_i2c_start_us  = (uint32_t)esp_timer_get_time();
-    } else {
-        /* STOP condition (SDA rising while SCL HIGH) */
-        if (s_i2c_in_frame && (s_i2c_byte_cnt > 0U || s_i2c_bit_idx >= 4U)) {
-            if (s_i2c_byte_cnt == 0U) {
-                s_i2c_work_buf[0] = s_i2c_curr_byte;
-                s_i2c_byte_cnt = 1U;
-            }
-            uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
-            if (next_head != s_i2c_ring_tail) {
-                s_i2c_ring[s_i2c_ring_head].timestamp_us = s_i2c_start_us;
-                s_i2c_ring[s_i2c_ring_head].length = s_i2c_byte_cnt;
-                for (uint8_t i = 0U; i < s_i2c_byte_cnt; i++) {
-                    s_i2c_ring[s_i2c_ring_head].bytes[i] = s_i2c_work_buf[i];
-                }
-                s_i2c_ring_head = next_head;
-            }
-        }
-        s_i2c_in_frame = false;
-        s_i2c_bit_idx = 0U;
-        s_i2c_curr_byte = 0U;
+        s_i2c_ring_head = next_head;
     }
 }
 
-/* IRAM ISR on Probe 3 (SCL, GPIO7) Rising Edge: Shifts 8 data bits + 9th ACK/NACK bit */
-static volatile uint8_t s_i2c_orphan_clks = 0U;
+/* IRAM ISR on Probe 2 (SDA, GPIO6): Captures full 400 kHz I2C transaction on START */
+static void IRAM_ATTR i2c_sda_edge_isr(void *arg)
+{
+    (void)arg;
+    bool hw_start = (I2C0.int_raw.det_start_int_raw != 0U);
+    uint32_t gpio_in = GPIO.in.val;
+    uint32_t scl = (gpio_in >> WTF_PIN_PROBE3_SCL) & 1U;
+    uint32_t sda = (gpio_in >> WTF_PIN_PROBE2_SDA) & 1U;
+
+    if (!hw_start && (scl == 0U || sda != 0U)) {
+        return;
+    }
+    I2C0.int_clr.det_start_int_clr = 1U;
+    if (!s_i2c_capture_enabled || ((gpio_in >> WTF_PIN_ESTOP) & 1U) == 0U) {
+        return;
+    }
+
+    uint32_t prev_mstatus;
+    asm volatile ("csrrc %0, mstatus, %1" : "=r"(prev_mstatus) : "r"(MSTATUS_MIE) : "memory");
+
+    uint8_t  frame_buf[I2C_FRAME_MAX_BYTES];
+    uint8_t  byte_cnt  = 0U;
+    uint8_t  split_idx = 0U;
+    uint8_t  bit_idx   = 0U;
+    uint8_t  curr_byte = 0U;
+    uint32_t spin = 0U;
+    const uint32_t max_spin = 80000U;
+    uint32_t t0 = (uint32_t)esp_timer_get_time();
+    bool     stop_seen = false;
+
+    /* If SCL is still HIGH from START, wait for SCL to go LOW */
+    while (((GPIO.in.val >> WTF_PIN_PROBE3_SCL) & 1U) != 0U) {
+        uint32_t cur = GPIO.in.val;
+        if (((cur >> WTF_PIN_ESTOP) & 1U) == 0U) {
+            GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) | (1UL << WTF_PIN_PROBE1_SNIFF) |
+                                   (1UL << WTF_PIN_PROBE2_SDA) | (1UL << WTF_PIN_PROBE3_SCL);
+            goto done;
+        }
+        if (((cur >> WTF_PIN_PROBE2_SDA) & 1U) != 0U) {
+            goto done;
+        }
+        if (++spin >= max_spin) {
+            goto done;
+        }
+    }
+
+    while (!stop_seen) {
+        /* 1. Wait for SCL rising edge */
+        uint32_t in = 0U;
+        while (1) {
+            in = GPIO.in.val;
+            if (((in >> WTF_PIN_ESTOP) & 1U) == 0U) {
+                GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) | (1UL << WTF_PIN_PROBE1_SNIFF) |
+                                       (1UL << WTF_PIN_PROBE2_SDA) | (1UL << WTF_PIN_PROBE3_SCL);
+                stop_seen = true;
+                break;
+            }
+            if ((in & (1UL << WTF_PIN_PROBE3_SCL)) != 0U) {
+                break;
+            }
+            if (++spin >= max_spin) {
+                stop_seen = true;
+                break;
+            }
+        }
+        if (stop_seen) {
+            break;
+        }
+
+        uint32_t sampled_sda = (in >> WTF_PIN_PROBE2_SDA) & 1U;
+        if (bit_idx < 8U) {
+            curr_byte = (uint8_t)((curr_byte << 1U) | (uint8_t)sampled_sda);
+            bit_idx++;
+        } else {
+            if (byte_cnt < I2C_FRAME_MAX_BYTES) {
+                frame_buf[byte_cnt++] = curr_byte;
+            }
+            curr_byte = 0U;
+            bit_idx = 0U;
+        }
+
+        /* 2. While SCL is HIGH, watch for SCL falling, Repeated START, or STOP */
+        while (1) {
+            in = GPIO.in.val;
+            if (((in >> WTF_PIN_ESTOP) & 1U) == 0U) {
+                GPIO.enable_w1tc.val = (1UL << WTF_PIN_PROBE0_GLITCH) | (1UL << WTF_PIN_PROBE1_SNIFF) |
+                                       (1UL << WTF_PIN_PROBE2_SDA) | (1UL << WTF_PIN_PROBE3_SCL);
+                stop_seen = true;
+                break;
+            }
+            if ((in & (1UL << WTF_PIN_PROBE3_SCL)) == 0U) {
+                break;
+            }
+            uint32_t cur_sda = (in >> WTF_PIN_PROBE2_SDA) & 1U;
+            if (cur_sda != sampled_sda) {
+                if (cur_sda == 0U) {
+                    /* Repeated START: zero-copy split */
+                    split_idx = byte_cnt;
+                    bit_idx = 0U;
+                    curr_byte = 0U;
+                    while (((GPIO.in.val >> WTF_PIN_PROBE3_SCL) & 1U) != 0U) {
+                        if (++spin >= max_spin) {
+                            stop_seen = true;
+                            break;
+                        }
+                    }
+                    break;
+                } else {
+                    /* STOP */
+                    stop_seen = true;
+                    break;
+                }
+            }
+            if (++spin >= max_spin) {
+                stop_seen = true;
+                break;
+            }
+        }
+    }
+
+    if (split_idx > 0U && split_idx < byte_cnt) {
+        i2c_ring_push_frame(t0, &frame_buf[0], split_idx);
+        i2c_ring_push_frame(t0, &frame_buf[split_idx], (uint8_t)(byte_cnt - split_idx));
+    } else if (byte_cnt > 0U) {
+        i2c_ring_push_frame(t0, frame_buf, byte_cnt);
+    }
+done:
+    I2C0.int_clr.det_start_int_clr = 1U;
+    GPIO.status_w1tc.val = (1UL << WTF_PIN_PROBE2_SDA) | (1UL << WTF_PIN_PROBE3_SCL);
+    if (prev_mstatus & MSTATUS_MIE) {
+        asm volatile ("csrrs zero, mstatus, %0" :: "r"(MSTATUS_MIE) : "memory");
+    }
+}
+
 static void IRAM_ATTR i2c_scl_posedge_isr(void *arg)
 {
     (void)arg;
-    uint32_t sda = (GPIO.in.val >> WTF_PIN_PROBE2_SDA) & 1U;
-    if (!s_i2c_in_frame) {
-        if (s_i2c_orphan_clks < 8U) {
-            s_i2c_curr_byte = (uint8_t)((s_i2c_curr_byte << 1U) | (uint8_t)sda);
-            s_i2c_orphan_clks++;
-        } else {
-            uint8_t next_head = (uint8_t)((s_i2c_ring_head + 1U) & (I2C_RING_DEPTH - 1U));
-            if (next_head != s_i2c_ring_tail) {
-                s_i2c_ring[s_i2c_ring_head].timestamp_us = (uint32_t)esp_timer_get_time();
-                s_i2c_ring[s_i2c_ring_head].length = 1U;
-                s_i2c_ring[s_i2c_ring_head].bytes[0] = s_i2c_curr_byte;
-                s_i2c_ring_head = next_head;
-            }
-            s_i2c_curr_byte = 0U;
-            s_i2c_orphan_clks = 0U;
-        }
-        return;
-    }
-    s_i2c_orphan_clks = 0U;
-    if (s_i2c_bit_idx < 8U) {
-        s_i2c_curr_byte = (uint8_t)((s_i2c_curr_byte << 1U) | (uint8_t)sda);
-        s_i2c_bit_idx++;
-    } else {
-        /* 9th clock rising edge: ACK (sda == 0) or NACK (sda == 1) */
-        if (s_i2c_byte_cnt < I2C_FRAME_MAX_BYTES) {
-            s_i2c_work_buf[s_i2c_byte_cnt++] = s_i2c_curr_byte;
-        }
-        s_i2c_curr_byte = 0U;
-        s_i2c_bit_idx   = 0U;
-    }
 }
 
 static void sniffer_hw_i2c_init(void)
@@ -441,7 +505,7 @@ static void decode_i2c_gy511_frame(const uint8_t *bytes, uint8_t len)
     if (rw == 0U) {
         s_i2c_last_reg = bytes[1];
     } else if (rw == 1U && len >= 7U) {
-        if (addr7 == 0x19U && (s_i2c_last_reg == 0xA8U || s_i2c_last_reg == 0x28U)) {
+        if (addr7 == 0x19U) {
             int16_t rx = (int16_t)(((uint16_t)bytes[2] << 8U) | bytes[1]) >> 4;
             int16_t ry = (int16_t)(((uint16_t)bytes[4] << 8U) | bytes[3]) >> 4;
             int16_t rz = (int16_t)(((uint16_t)bytes[6] << 8U) | bytes[5]) >> 4;
@@ -792,6 +856,7 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
     int64_t last_uart_byte_us = 0;
 
     for (;;) {
+        s_i2c_capture_enabled = sniffer_mode_allows(PROTO_I2C);
         /* 0. Handle UART Auto-Detect Hunt Request */
         if (s_uart_autodetect_req) {
             s_uart_autodetect_req = false;

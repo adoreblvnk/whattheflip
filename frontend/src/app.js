@@ -351,7 +351,7 @@ function getIrisProximity(rssi) {
 }
 
 function updateAccelHistory(rx, ry, rz) {
-  if (rx === 0 && ry === 0 && rz === 0 && accelX.val !== null) {
+  if (rx === 0 && ry === 0 && rz === 0) {
     return;
   }
   let prevX = accelX.val;
@@ -359,13 +359,15 @@ function updateAccelHistory(rx, ry, rz) {
   let prevZ = accelZ.val;
   let changed = (prevX !== null) && (Math.abs(rx - prevX) > 8 || Math.abs(ry - prevY) > 8 || Math.abs(rz - prevZ) > 8);
   let netMag = Math.hypot(rx, ry, rz);
-  let shaken = Math.abs(netMag - 1000) > 280 || (prevX !== null && (Math.abs(rx - prevX) > 220 || Math.abs(ry - prevY) > 220 || Math.abs(rz - prevZ) > 220));
+  let shaken = (prevX !== null) && (
+    (netMag > 200 && Math.abs(netMag - 1000) > 300) ||
+    Math.max(Math.abs(rx - prevX), Math.abs(ry - prevY), Math.abs(rz - prevZ)) > 250
+  );
   accelX.val = rx;
   accelY.val = ry;
   accelZ.val = rz;
   if (changed) i2cValueChangedUntil.val = Date.now() + 1400;
   if (shaken) gy511ShakeUntil.val = Date.now() + 900;
-  xFilterRing.push(rx);
   if (xFilterRing.length > 8) xFilterRing.shift();
   let sumX = xFilterRing.reduce((a, bVal) => a + bVal, 0);
   accelAvgX.val = Math.round(sumX / xFilterRing.length);
