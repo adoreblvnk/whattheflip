@@ -594,7 +594,8 @@ void esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *fr
     }
 
     esp_ieee802154_receive_handle_done(frame);
-    if (wtf_discovery_get_tool_mode() != WTF_TOOL_MODE_WIFI && !s_wifi_burst_active) {
+    uint8_t cur_m = wtf_discovery_get_tool_mode();
+    if ((cur_m == WTF_TOOL_MODE_ZIGBEE || cur_m == WTF_TOOL_MODE_AUTO) && !s_wifi_burst_active) {
         esp_ieee802154_receive();
     }
 }
@@ -761,9 +762,9 @@ static void sniffer_wireless_init(void)
     esp_ieee802154_enable();
     esp_ieee802154_set_channel(11U);
     esp_ieee802154_set_promiscuous(true);
-    esp_ieee802154_set_rx_when_idle(true);
-    esp_ieee802154_receive();
-    tm_printf((UB *)"[SNIFFER:WIRELESS] IEEE 802.15.4 RX ENABLED\n");
+    esp_ieee802154_set_rx_when_idle(false);
+    (void)esp_ieee802154_sleep();
+    tm_printf((UB *)"[SNIFFER:WIRELESS] IEEE 802.15.4 initialized (sleeping until ZIGBEE/AUTO)\n");
 }
 /* --------------------------------------------------------------------------
  * Main Sniffer Task Entry Point
@@ -994,7 +995,8 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
             if (ch != SOFTAP_HOME_CHANNEL) {
                 (void)esp_wifi_set_channel(SOFTAP_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
             }
-            if (wtf_discovery_get_tool_mode() != WTF_TOOL_MODE_WIFI) {
+            uint8_t post_m = wtf_discovery_get_tool_mode();
+            if (post_m == WTF_TOOL_MODE_ZIGBEE || post_m == WTF_TOOL_MODE_AUTO) {
                 (void)esp_ieee802154_receive();
             }
         }
@@ -1046,17 +1048,19 @@ EXPORT void wtf_sniffer_task(INT stacd, void *exinf)
                 }
             }
         }
-        /* Keep 802.15.4 sleeping while in dedicated WIFI mode so Wi-Fi promiscuous RX has full RF access */
+        /* Keep 802.15.4 sleeping unless ZIGBEE or AUTO is active so SoftAP Ch 6 has full RF airtime */
         static uint8_t s_prev_mode_rf = WTF_TOOL_MODE_OFF;
         uint8_t cur_mode_rf = wtf_discovery_get_tool_mode();
         if (cur_mode_rf != s_prev_mode_rf) {
             s_prev_mode_rf = cur_mode_rf;
-            if (cur_mode_rf == WTF_TOOL_MODE_WIFI) {
-                (void)esp_ieee802154_sleep();
-            } else if (cur_mode_rf == WTF_TOOL_MODE_ZIGBEE || cur_mode_rf == WTF_TOOL_MODE_AUTO) {
+            if (cur_mode_rf == WTF_TOOL_MODE_ZIGBEE || cur_mode_rf == WTF_TOOL_MODE_AUTO) {
                 uint8_t zt = (s_154_channel >= 11U && s_154_channel <= 26U) ? s_154_channel : 11U;
+                (void)esp_ieee802154_set_rx_when_idle(true);
                 (void)esp_ieee802154_set_channel(zt);
                 (void)esp_ieee802154_receive();
+            } else {
+                (void)esp_ieee802154_set_rx_when_idle(false);
+                (void)esp_ieee802154_sleep();
             }
         }
         tk_dly_tsk(10);
